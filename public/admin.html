@@ -743,18 +743,18 @@
       }
     }
 
-    // =========================================================================
-    // 4. NowBorder テキスト自動生成（30分丸め ＋ 万単位四捨五入）
+// =========================================================================
+    // 4. NowBorder テキスト自動生成（5分丸め ＋ 万単位四捨五入）
     // =========================================================================
     function formatRoundedJstTime(ms) {
       const jst = new Date(ms + 9 * 3600 * 1000);
       const hh = jst.getUTCHours();
       const mm = jst.getUTCMinutes();
       const totalMinutes = hh * 60 + mm;
-      const roundedTotalMinutes = Math.round(totalMinutes / 30) * 30;
+      const roundedTotalMinutes = Math.round(totalMinutes / 5) * 5;
       const finalHour = Math.floor(roundedTotalMinutes / 60) % 24;
       const finalMin = roundedTotalMinutes % 60;
-      return finalMin === 30 ? `${finalHour}時30分` : `${finalHour}時`;
+      return finalMin === 0 ? `${finalHour}時` : `${finalHour}時${finalMin}分`;
     }
 
     function formatManRounded(score) {
