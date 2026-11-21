@@ -2233,4 +2233,207 @@
       }
 
       const tPts = pred.targetGraph.tier;
-      const tDur = pred.targetGraph.endTime - pred.targetGraph.start
+      const tDur = pred.targetGraph.endTime - pred.targetGraph.startTime;
+      ctx.save();
+      if (theme.rainbow) {
+        const lineGrad = ctx.createLinearGradient(plotX, 0, plotX + plotW, 0);
+        lineGrad.addColorStop(0, "#ff4d6d");
+        lineGrad.addColorStop(0.3, "#ffb703");
+        lineGrad.addColorStop(0.6, "#06d6a0");
+        lineGrad.addColorStop(1, "#3a86ff");
+        ctx.strokeStyle = lineGrad;
+      } else {
+        ctx.strokeStyle = theme.accent;
+      }
+      ctx.lineWidth = 3.8;
+      if (theme.sparkle) {
+        ctx.shadowColor = theme.glowColor;
+        ctx.shadowBlur = 12;
+      }
+      ctx.beginPath();
+      const step = Math.max(1, Math.floor(tPts.length / 180));
+      for (let i = 0; i < tPts.length; i += step) {
+        const [t, v] = tPts[i];
+        const px = xOf((t - pred.targetGraph.startTime) / tDur);
+        const py = yOf(v);
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      const [lt, lv] = tPts[tPts.length - 1];
+      const lx = xOf((lt - pred.targetGraph.startTime) / tDur);
+      const ly = yOf(lv);
+      ctx.lineTo(lx, ly);
+      ctx.stroke();
+
+      ctx.fillStyle = "#ffffff";
+      ctx.beginPath();
+      ctx.arc(lx, ly, 5.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+
+      const endY = yOf(pred.centralFinal);
+      ctx.save();
+      ctx.fillStyle = theme.forecast;
+      ctx.beginPath();
+      ctx.arc(xOf(1), endY, 5.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // =========================================================================
+    // 7. UI 描画・コントロール制御・一斉配信
+    // =========================================================================
+    function renderAllUI() {
+      const evSel = document.getElementById("targetEventSelect");
+      evSel.innerHTML = "";
+      for (const item of state.eligibleItems) {
+        const opt = document.createElement("option");
+        opt.value = item.key;
+        opt.textContent = item.label;
+        evSel.appendChild(opt);
+      }
+      if (state.selectedKey) evSel.value = state.selectedKey;
+
+      const ranks = [];
+      for (const k of state.graphCache.keys()) {
+        if (k.startsWith(`${state.selectedKey}::`)) {
+          ranks.push(Number(k.split("::").pop()));
+        }
+      }
+      document.getElementById("cachedRanksInfo").textContent =
+        ranks.length > 0
+          ? `選択中イベントの取得済み順位: ${ranks.sort((a, b) => a - b).map((r) => "T" + r.toLocaleString()).join(", ")}`
+          : "選択中イベントのグラフデータはまだ取得されていません。";
+
+      renderSlotEditor();
+      updateTextPreviews();
+      renderActiveCanvas();
+    }
+
+    function renderSlotEditor() {
+      const editor = document.getElementById("slotEditor");
+      editor.innerHTML = "";
+      const rankOptions = [100, 500, 1000, 5000, 10000, 50000, 100000, 200000];
+
+      const makeRankSelect = (val, onChange) => {
+        const s = document.createElement("select");
+        rankOptions.forEach((r) => {
+          const o = document.createElement("option");
+          o.value = r;
+          o.textContent = `T${r.toLocaleString()}`;
+          if (Number(val) === r) o.selected = true;
+          s.appendChild(o);
+        });
+        s.onchange = (e) => { onChange(Number(e.target.value)); renderActiveCanvas(); };
+        return s;
+      };
+
+      const makeEventSelect = (val, onChange) => {
+        const s = document.createElement("select");
+        state.eligibleItems.forEach((it) => {
+          const o = document.createElement("option");
+          o.value = it.key;
+          o.textContent = it.shortLabel;
+          if (val === it.key) o.selected = true;
+          s.appendChild(o);
+        });
+        s.onchange = (e) => { onChange(e.target.value); renderActiveCanvas(); };
+        return s;
+      };
+
+      if (state.mode === "single") {
+        const row = document.createElement("div");
+        row.className = "row";
+        row.append(
+          "表示対象: ",
+          makeEventSelect(state.single.key, (k) => (state.single.key = k)),
+          makeRankSelect(state.single.rank, (r) => (state.single.rank = r))
+        );
+        editor.appendChild(row);
+      } else if (state.mode === "dual") {
+        ["左枠", "右枠"].forEach((lbl, idx) => {
+          const row = document.createElement("div");
+          row.className = "row";
+          row.append(
+            `${lbl}: `,
+            makeEventSelect(state.dual[idx].key, (k) => (state.dual[idx].key = k)),
+            makeRankSelect(state.dual[idx].rank, (r) => (state.dual[idx].rank = r))
+          );
+          editor.appendChild(row);
+        });
+      } else {
+        ["左枠（標準: ドリーム級）", "中央枠（標準: ダイヤ級）", "右枠（標準: プラチナ級）"].forEach((lbl, idx) => {
+          const row = document.createElement("div");
+          row.className = "row";
+          row.append(
+            `${lbl}: `,
+            makeEventSelect(state.triple[idx].key, (k) => (state.triple[idx].key = k)),
+            makeRankSelect(state.triple[idx].rank, (r) => (state.triple[idx].rank = r))
+          );
+          editor.appendChild(row);
+        });
+      }
+    }
+
+    function onModeOrThemeChanged() {
+      state.mode = document.getElementById("modeSelect").value;
+      state.themeOverride = document.getElementById("themeSelect").value;
+      renderSlotEditor();
+      renderActiveCanvas();
+    }
+
+    document.getElementById("targetEventSelect").addEventListener("change", (e) => {
+      const newKey = e.target.value;
+      state.selectedKey = newKey;
+      state.single.key = newKey;
+      state.dual.forEach((s) => (s.key = newKey));
+      state.triple.forEach((s) => (s.key = newKey));
+      renderAllUI();
+    });
+
+    async function triggerBroadcast() {
+      if (!confirm("現在プレビュー中の内容で、購読登録されている全Discordチャンネルへ一斉通知を送信します。よろしいですか？")) {
+        return;
+      }
+
+      const btn = document.getElementById("broadcastBtn");
+      btn.disabled = true;
+      btn.textContent = "送信中...";
+
+      try {
+        const canvas = document.getElementById("reportCanvas");
+        const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+
+        const formData = new FormData();
+        formData.append("nowBorderText", buildNowBorderText());
+        formData.append("customText", document.getElementById("customTextInput").value.trim());
+        formData.append("customTextPosition", document.getElementById("customTextPosSelect").value);
+        if (blob) {
+          formData.append("image", blob, "border_prediction.png");
+        }
+
+        const res = await apiFetch("/api/admin/broadcast", {
+          method: "POST",
+          body: formData,
+        });
+        const data = await res.json();
+        if (data.ok) {
+          showToast(data.message);
+        } else {
+          alert("送信エラー: " + (data.error || "不明なエラー"));
+        }
+      } catch (err) {
+        alert("通信エラー: " + err.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "🚀 Botに反映（登録チャンネルへ一斉通知）";
+      }
+    }
+
+    if (adminPassword) {
+      document.getElementById("loginOverlay").style.display = "none";
+      initializeApp();
+    }
+  </script>
+</body>
+</html>
