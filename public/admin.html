@@ -194,12 +194,12 @@
 </head>
 <body>
   <div class="login-overlay" id="loginOverlay">
-    <div class="login-card">
+    <form class="login-card" id="loginForm" onsubmit="event.preventDefault(); doLogin();">
       <h2>管理コンソール ログイン</h2>
-      <input type="password" id="pwInput" placeholder="パスワードを入力" />
-      <button class="primary" style="width:100%;" onclick="doLogin()">ログイン</button>
+      <input type="password" id="pwInput" placeholder="パスワードを入力" autocomplete="current-password" required />
+      <button type="submit" id="loginBtn" class="primary" style="width:100%;">ログイン</button>
       <div id="loginErr" style="color:#dc2626;font-size:12px;margin-top:8px;"></div>
-    </div>
+    </form>
   </div>
 
   <header>
@@ -376,7 +376,7 @@
       return null;
     }
 
-    // =========================================================================
+// =========================================================================
     // 1. 認証 ＆ サーバー通信
     // =========================================================================
     async function apiFetch(url, options = {}) {
@@ -395,26 +395,51 @@
     }
 
     async function doLogin() {
-      const pw = document.getElementById("pwInput").value;
-      const res = await fetch("/api/admin/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password: pw }),
-      });
-      if (res.ok) {
-        adminPassword = pw;
-        sessionStorage.setItem("admin_pw", pw);
-        document.getElementById("loginOverlay").style.display = "none";
-        await initializeApp();
-      } else {
-        document.getElementById("loginErr").textContent = "パスワードが違います。";
+      const pwInput = document.getElementById("pwInput");
+      const btn = document.getElementById("loginBtn");
+      const errEl = document.getElementById("loginErr");
+      const pw = pwInput ? pwInput.value : "";
+
+      if (!pw) {
+        errEl.textContent = "パスワードを入力してください。";
+        return;
+      }
+
+      errEl.textContent = "";
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = "ログイン中...";
+      }
+
+      try {
+        const res = await fetch("/api/admin/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password: pw }),
+        });
+
+        if (res.ok) {
+          adminPassword = pw;
+          sessionStorage.setItem("admin_pw", pw);
+          document.getElementById("loginOverlay").style.display = "none";
+          await initializeApp();
+        } else if (res.status === 401) {
+          errEl.textContent = "パスワードが違います。";
+        } else {
+          errEl.textContent = `サーバーエラーが発生しました (HTTP ${res.status})`;
+        }
+      } catch (err) {
+        errEl.textContent = `通信または初期化エラー: ${err.message}`;
+        console.error("Login error:", err);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = "ログイン";
+        }
       }
     }
-
-    document.getElementById("pwInput").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") doLogin();
-    });
-
+    window.doLogin = doLogin;
+    
     async function initializeApp() {
       await Promise.all([loadArchiveFromGithub(false), loadServerBootstrap()]);
       rebuildCombinedItems();
