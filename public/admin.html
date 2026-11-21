@@ -762,6 +762,20 @@
       return `${Math.round(score / 10000)}万`;
     }
 
+    function getLatestDataTimeLabel() {
+      const targetKey = state.selectedKey;
+      let latestTimestamp = 0;
+      for (const tier of TIER_DEFS) {
+        const graph = targetKey ? state.graphCache.get(`${targetKey}::${tier.rank}`) : null;
+        if (graph && Array.isArray(graph.tier) && graph.tier.length > 0) {
+          const [lastT] = graph.tier[graph.tier.length - 1];
+          if (lastT > latestTimestamp) latestTimestamp = lastT;
+        }
+      }
+      const baseTime = latestTimestamp > 0 ? latestTimestamp : Date.now();
+      return formatRoundedJstTime(baseTime);
+    }
+
     function buildNowBorderText() {
       const targetKey = state.selectedKey;
       let latestTimestamp = 0;
@@ -779,7 +793,7 @@
       }
 
       const baseTime = latestTimestamp > 0 ? latestTimestamp : Date.now();
-      return [`${formatRoundedJstTime(baseTime)}時点のボーダーです！`, ...lines].join("\n");
+      return [`最終更新(${formatRoundedJstTime(baseTime)})時点のボーダーです！`, ...lines].join("\n");
     }
 
     function updateTextPreviews() {
@@ -1469,6 +1483,32 @@
       ctx.fillText(str + "…", x, y);
     }
 
+let syncPredictionTimer = null;
+
+    function scheduleSyncPredictionCache() {
+      if (!adminPassword || !state.selectedKey) return;
+      const hasAnyGraph = TIER_DEFS.some((t) => state.graphCache.has(`${state.selectedKey}::${t.rank}`));
+      if (!hasAnyGraph) return;
+
+      clearTimeout(syncPredictionTimer);
+      syncPredictionTimer = setTimeout(async () => {
+        try {
+          const canvas = document.getElementById("reportCanvas");
+          const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+          if (!blob) return;
+
+          const formData = new FormData();
+          formData.append("timeLabel", getLatestDataTimeLabel());
+          formData.append("image", blob, "border_prediction.png");
+
+          await apiFetch("/api/admin/cache-prediction", {
+            method: "POST",
+            body: formData,
+          });
+        } catch (_) {}
+      }, 1200);
+    }
+
     function renderActiveCanvas() {
       const canvas = document.getElementById("reportCanvas");
       if (state.mode === "single") {
@@ -1486,6 +1526,7 @@
         canvas.height = 760;
         drawMultiCards(canvas, state.triple);
       }
+      scheduleSyncPredictionCache();
     }
 
     function drawSingleCard(canvas, pred) {
