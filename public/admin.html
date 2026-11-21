@@ -150,6 +150,16 @@
       line-height: 1.6;
       font-size: 14px;
     }
+    .diag-preview-box {
+      margin-top: 10px;
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      border-radius: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      color: #334155;
+      line-height: 1.6;
+    }
     .slot-editor {
       display: flex;
       flex-direction: column;
@@ -193,7 +203,7 @@
   </div>
 
   <header>
-    <h1>イベントボーダー予測Bot 管理コンソール（軽量クライアント描画版）</h1>
+    <h1>イベントボーダー予測Bot 管理コンソール（v5 キャリブレーション版）</h1>
     <div class="status-pills">
       <span class="pill" id="statArchive">GitHub過去データ: 読込中...</span>
       <span class="pill" id="statEvents">イベント一覧キャッシュ: -</span>
@@ -295,6 +305,7 @@
             ▼ 送信テキスト構成プレビュー
           </div>
           <div class="text-preview-box" id="messageFlowPreview">読込中...</div>
+          <div class="diag-preview-box" id="diagTagsPreview">予測診断ログ: データ待機中...</div>
         </div>
       </div>
     </section>
@@ -760,16 +771,38 @@
         preview = `【1通目】\n${nowBorderText}\n\n[添付: BorderPrediction画像]`;
       }
       document.getElementById("messageFlowPreview").textContent = preview;
+      updateDiagPreview();
+    }
+
+    function updateDiagPreview() {
+      const diagEl = document.getElementById("diagTagsPreview");
+      const targetKey = state.selectedKey;
+      if (!targetKey) {
+        diagEl.textContent = "予測診断ログ: イベント未選択";
+        return;
+      }
+      const lines = [];
+      for (const tier of TIER_DEFS) {
+        const pred = getPredictionFor(targetKey, tier.rank);
+        if (pred && Array.isArray(pred.diagTags)) {
+          lines.push(`・${tier.label}(T${tier.rank.toLocaleString()}): ${pred.diagTags.join(" / ")}`);
+        } else {
+          lines.push(`・${tier.label}(T${tier.rank.toLocaleString()}): データ未取得`);
+        }
+      }
+      diagEl.innerHTML = `<strong>▼ v5 キャリブレーション診断タグ（管理画面確認用）</strong><br>${lines.join("<br>")}`;
     }
 
     // =========================================================================
-    // 5. 着地予測アルゴリズム（v5.html 完全移植）
+    // 5. 着地予測モデル（v5 キャリブレーション版：JST 5区分ゾーン制御・区間積算・上限アンカー）
     // =========================================================================
     function calcMedian(values) {
       if (!values || values.length === 0) return 1.0;
       const sorted = [...values].sort((a, b) => a - b);
       const mid = sorted.length >> 1;
-      return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) * 0.5;
+      return sorted.length % 2 === 1
+        ? sorted[mid]
+        : (sorted[mid - 1] + sorted[mid]) * 0.5;
     }
 
     function interpScoreAtTime(graph, targetT) {
@@ -780,7 +813,9 @@
       if (targetT <= pts[0][0]) {
         return pts[0][1] * Math.max(0, (targetT - st) / Math.max(1, pts[0][0] - st));
       }
-      if (targetT >= pts[pts.length - 1][0]) return pts[pts.length - 1][1];
+      if (targetT >= pts[pts.length - 1][0]) {
+        return pts[pts.length - 1][1];
+      }
       let lo = 0, hi = pts.length - 1;
       while (lo + 1 < hi) {
         const mid = (lo + hi) >> 1;
@@ -793,18 +828,92 @@
     }
 
     function interpScoreAtProgress(graph, prog) {
-      return interpScoreAtTime(graph, graph.startTime + prog * (graph.endTime - graph.startTime));
+      const targetT = graph.startTime + prog * (graph.endTime - graph.startTime);
+      return interpScoreAtTime(graph, targetT);
+    }
+
+    function getJstHour(ms) {
+      return new Date(ms + 9 * 3600 * 1000).getUTCHours();
+    }
+
+    function getJstDayOfWeek(ms) {
+      // 0:日曜, 1:月曜, ..., 6:土曜
+      return new Date(ms + 9 * 3600 * 1000).getUTCDay();
     }
 
     function getJstHourActivityFactor(ms) {
-      const h = new Date(ms + 9 * 3600 * 1000).getUTCHours();
+      const h = getJstHour(ms);
       const table = [
-        0.55, 0.35, 0.22, 0.16, 0.15, 0.20,
-        0.35, 0.55, 0.65, 0.65, 0.70, 0.75,
-        0.85, 0.80, 0.80, 0.85, 0.90, 1.00,
-        1.10, 1.20, 1.35, 1.40, 1.25, 0.90,
+        0.55, 0.35, 0.22, 0.16, 0.15, 0.20, // 00-05時
+        0.35, 0.55, 0.65, 0.65, 0.70, 0.75, // 06-11時
+        0.85, 0.80, 0.80, 0.85, 0.90, 1.00, // 12-17時
+        1.10, 1.20, 1.35, 1.40, 1.25, 0.90  // 18-23時
       ];
       return table[h] || 1.0;
+    }
+
+    function getWindowAvgJstActivity(graph, endT, winMs) {
+      const st = graph.startTime;
+      const actualWin = Math.max(60000, Math.min(winMs, endT - st));
+      let sum = 0;
+      for (let k = 0; k <= 4; k++) {
+        sum += getJstHourActivityFactor(endT - actualWin * (k / 4));
+      }
+      return Math.max(0.20, sum / 5);
+    }
+
+    function getChapterFatigueFactor(item) {
+      const rawId = `${item?.chapterId || ""} ${item?.key || ""}`;
+      const m = /chapter[-_]?0*(\d+)/i.exec(rawId);
+      if (!m) return 1.0;
+      const ch = Number(m[1]);
+      if (ch <= 1) return 1.00;
+      if (ch === 2) return 0.99;
+      if (ch === 3) return 0.975;
+      return 0.955; // Ch.4以降の連戦疲労減衰
+    }
+
+    function getJstTimeZoneConfig(lastT, remH, pCur) {
+      const h = getJstHour(lastT);
+      let zone;
+      if (h >= 1 && h <= 4) {
+        zone = { label: "深夜停滞帯", winH: 6.0, wPace: 0.10, clampLo: 0.90, clampHi: 1.10 };
+      } else if (h >= 5 && h <= 8) {
+        zone = { label: "早朝・通勤帯", winH: 6.0, wPace: 0.15, clampLo: 0.88, clampHi: 1.12 };
+      } else if (h >= 9 && h <= 16) {
+        zone = { label: "日中巡航帯", winH: 3.0, wPace: 0.30, clampLo: 0.82, clampHi: 1.18 };
+      } else if (h >= 17 && h <= 22) {
+        zone = { label: "ゴールデン帯", winH: 2.0, wPace: 0.45, clampLo: 0.75, clampHi: 1.25 };
+      } else {
+        zone = { label: "深夜切替帯", winH: 3.0, wPace: 0.25, clampLo: 0.85, clampHi: 1.15 };
+      }
+
+      // 最終日カウントダウン段階制御
+      if (remH <= 2.0) {
+        return {
+          label: "最終追い込み(残2h内)",
+          winH: 0.75,
+          wPace: 0.70,
+          clampLo: 0.65,
+          clampHi: 1.50
+        };
+      }
+      if (remH <= 4.0) {
+        return {
+          label: "スパート予兆(残4h内)",
+          winH: 1.5,
+          wPace: Math.max(zone.wPace, 0.45),
+          clampLo: 0.72,
+          clampHi: 1.35
+        };
+      }
+
+      // 序盤（進捗35%未満）のみ初動スピードの重みを穏やかに加算
+      if (pCur < 0.35) {
+        const earlyBoost = 0.22 * (1.0 - pCur / 0.35);
+        zone.wPace = Math.min(0.55, zone.wPace + earlyBoost);
+      }
+      return zone;
     }
 
     function computePrediction(targetItem, targetGraph, refPairs, targetRank) {
@@ -816,19 +925,50 @@
       const lastT = lastPt[0];
       const currentScore = lastPt[1];
       const elapsedMs = Math.max(60000, lastT - st);
+      const elapsedH = elapsedMs / 3600000;
+      const remH = Math.max(0, (et - lastT) / 3600000);
       const pCur = Math.min(1, elapsedMs / dur);
       const isFinished = pCur >= 0.998 && !targetItem.live;
 
-      const recentWindowMs = Math.min(3600 * 1000, Math.max(15 * 60 * 1000, elapsedMs * 0.12));
-      const sRecentPrev = interpScoreAtTime(targetGraph, Math.max(st, lastT - recentWindowMs));
-      const recentPace = ((currentScore - sRecentPrev) / recentWindowMs) * 3600000;
+      // KPI表示用の直近1時間時速
+      const display1hMs = Math.min(3600 * 1000, Math.max(15 * 60 * 1000, elapsedMs * 0.12));
+      const sDisplayPrev = interpScoreAtTime(targetGraph, Math.max(st, lastT - display1hMs));
+      const recentPace = ((currentScore - sDisplayPrev) / display1hMs) * 3600000;
 
-      const midWindowMs = Math.max(recentWindowMs * 1.5, elapsedMs * 0.28);
-      const sMidPrev = interpScoreAtTime(targetGraph, Math.max(st, lastT - midWindowMs));
-      const midPace = ((currentScore - sMidPrev) / midWindowMs) * 3600000;
+      // 時間帯・カウントダウン別の安定化計測窓
+      const zoneCfg = getJstTimeZoneConfig(lastT, remH, pCur);
+      const zoneWinMs = Math.min(elapsedMs * 0.85, Math.max(15 * 60 * 1000, zoneCfg.winH * 3600 * 1000));
+      const sZonePrev = interpScoreAtTime(targetGraph, Math.max(st, lastT - zoneWinMs));
+      const zonePace = ((currentScore - sZonePrev) / zoneWinMs) * 3600000;
+      const curZoneAct = getWindowAvgJstActivity(targetGraph, lastT, zoneWinMs);
+      const normalizedCurPace = zonePace / curZoneAct;
+
+      // 直近6時間平均時速 ＆ 中期減速トレンド検出
+      const win6hMs = Math.min(elapsedMs, 6 * 3600 * 1000);
+      const pace6h = ((currentScore - interpScoreAtTime(targetGraph, Math.max(st, lastT - win6hMs))) / Math.max(1, win6hMs)) * 3600000;
+      let trendFactor = 1.0;
+      if (elapsedH >= 14.0) {
+        const tMid6 = lastT - 6 * 3600 * 1000;
+        const tPrev12 = Math.max(st, lastT - 12 * 3600 * 1000);
+        if (tMid6 - tPrev12 >= 3 * 3600 * 1000) {
+          const sMid6 = interpScoreAtTime(targetGraph, tMid6);
+          const sPrev12 = interpScoreAtTime(targetGraph, tPrev12);
+          const pLast6 = (currentScore - sMid6) / 6.0;
+          const pPrev6 = (sMid6 - sPrev12) / ((tMid6 - tPrev12) / 3600000);
+          const npLast6 = pLast6 / Math.max(0.2, getJstHourActivityFactor(lastT - 3 * 3600 * 1000));
+          const npPrev6 = pPrev6 / Math.max(0.2, getJstHourActivityFactor((tMid6 + tPrev12) * 0.5));
+          if (npPrev6 > 0) {
+            const ratioTrend = npLast6 / npPrev6;
+            if (ratioTrend < 0.96) {
+              trendFactor = Math.max(0.96, Math.min(1.0, 1.0 + (ratioTrend - 1.0) * 0.18));
+            }
+          }
+        }
+      }
 
       const naiveLinear = pCur > 0.02 ? currentScore / pCur : currentScore;
 
+      // 同一順位（targetRank）の完了済み過去データのみを抽出
       const validRefs = refPairs
         .filter(({ graph }) => {
           if (!graph || !Array.isArray(graph.tier) || graph.tier.length < 20) return false;
@@ -839,14 +979,18 @@
         })
         .sort((a, b) => b.graph.endTime - a.graph.endTime);
 
-      let monthlyGrowthRate = 0.010;
+      const diagTags = [];
+      diagTags.push(`${zoneCfg.label}(窓${zoneCfg.winH}h/時速重み${Math.round(zoneCfg.wPace * 100)}%)`);
+
+      // 1. 控えめな環境インフレ補正（0.0% 〜 +0.8%/月・デフォルト+0.5%/月）
+      let monthlyGrowthRate = 0.005;
       if (validRefs.length >= 3) {
-        const refPts = validRefs.map((r) => {
+        const refPts = validRefs.map(r => {
           const rDurH = (r.graph.endTime - r.graph.startTime) / 3600000;
           const rFinal = r.graph.tier[r.graph.tier.length - 1][1];
           return {
             tMonths: (r.graph.startTime - st) / (30 * 24 * 3600 * 1000),
-            val: rFinal / Math.max(1, rDurH),
+            val: rFinal / Math.max(1, rDurH)
           };
         });
         const meanT = refPts.reduce((a, b) => a + b.tMonths, 0) / refPts.length;
@@ -857,56 +1001,80 @@
           den += Math.pow(p.tMonths - meanT, 2);
         }
         if (den > 0.05 && meanV > 0) {
-          monthlyGrowthRate = Math.max(0.0, Math.min(0.015, num / den / meanV));
+          const rawSlopeRate = (num / den) / meanV;
+          monthlyGrowthRate = Math.max(0.0, Math.min(0.008, rawSlopeRate));
         }
       }
+      if (monthlyGrowthRate > 0.002) {
+        diagTags.push(`環境インフレ(+${(monthlyGrowthRate * 100).toFixed(1)}%/月)`);
+      }
 
-      const eraAdjustedRefs = validRefs.map((r) => {
+      const eraAdjustedRefs = validRefs.map(r => {
         const monthsAgo = (st - r.graph.startTime) / (30 * 24 * 3600 * 1000);
-        const eraScale = Math.max(0.92, Math.min(1.08, 1.0 + monthlyGrowthRate * monthsAgo));
+        const eraScale = Math.max(0.95, Math.min(1.05, 1.0 + monthlyGrowthRate * monthsAgo));
         return {
           ...r,
           monthsAgo,
           eraScale,
-          adjFinal: r.graph.tier[r.graph.tier.length - 1][1] * eraScale,
+          adjFinal: r.graph.tier[r.graph.tier.length - 1][1] * eraScale
         };
       });
+
+      // 2. 環境係数（週末夜終了ブースト / 直前反動 / 中期減速トレンド）
+      const targetEndHour = getJstHour(et);
+      const targetEndDay = getJstDayOfWeek(et);
+      const targetStartDay = getJstDayOfWeek(st);
+
+      const weekendEndFactor = (targetEndDay === 0 && targetEndHour >= 17) ? 1.015 : 1.0;
+      if (weekendEndFactor > 1.0) {
+        diagTags.push("日曜夜終了(+1.5%)");
+      }
 
       let resourceFactor = 1.0;
       if (Array.isArray(state.events) && state.events.length > 0) {
         const priorEvents = state.events
-          .filter((ev) => ev.endTime && ev.endTime <= st + 3600000 && ev.eventId !== targetItem.eventId)
+          .filter(ev => ev.endTime && ev.endTime <= st + 3600000 && ev.eventId !== targetItem.eventId)
           .sort((a, b) => b.endTime - a.endTime);
 
         if (priorEvents.length > 0) {
           const prevEv = priorEvents[0];
           const prevName = prevEv.name || "";
           if (prevEv.isSongScore === true || prevName.includes("スコア")) {
-            resourceFactor *= 1.03;
+            resourceFactor *= 1.02;
+            diagTags.push("直前スコアチャレ(+2.0%)");
           }
         }
       }
 
       if (eraAdjustedRefs.length >= 3) {
-        const medAdjFinal = calcMedian(eraAdjustedRefs.map((r) => r.adjFinal));
+        const medAdjFinal = calcMedian(eraAdjustedRefs.map(r => r.adjFinal));
         const prevSameCat = eraAdjustedRefs.find(
-          (r) => r.graph.endTime <= st + 3600000 && st - r.graph.endTime < 7 * 24 * 3600 * 1000
+          r => r.graph.endTime <= st + 3600000 && (st - r.graph.endTime) < 7 * 24 * 3600 * 1000
         );
         if (prevSameCat && medAdjFinal > 0) {
           const prevHeatRatio = prevSameCat.adjFinal / medAdjFinal;
-          const rebound = Math.max(0.88, Math.min(1.04, 1.0 - (prevHeatRatio - 1.0) * 0.12));
-          resourceFactor *= rebound;
+          if (prevHeatRatio > 1.15) {
+            const rebound = Math.max(0.90, Math.min(1.0, 1.0 - (prevHeatRatio - 1.0) * 0.10));
+            resourceFactor *= rebound;
+            if (rebound < 0.995) {
+              diagTags.push(`前回過熱反動(${(rebound * 100 - 100).toFixed(1)}%)`);
+            }
+          }
         }
       }
 
-      const wPaceWeight = Math.min(0.80, Math.max(0.25, Math.pow(pCur, 1.15)));
+      if (trendFactor < 0.995) {
+        diagTags.push(`直近6h減速(${(trendFactor * 100 - 100).toFixed(1)}%)`);
+      }
+
+      const targetFatigue = getChapterFatigueFactor(targetItem);
+      if (targetFatigue < 0.995) {
+        diagTags.push(`リレー連戦疲労(${(targetFatigue * 100 - 100).toFixed(1)}%)`);
+      }
+
+      // 3. 初動・途中経過からの自動熱量判定（時間帯別クランプ適用）
+      const wPaceWeight = zoneCfg.wPace;
       const wLevelWeight = 1.0 - wPaceWeight;
-
-      const targetEndHour = new Date(et + 9 * 3600 * 1000).getUTCHours();
-      const targetStartDay = new Date(st + 9 * 3600 * 1000).getUTCDay();
-
-      const curActivity = getJstHourActivityFactor(lastT);
-      const normalizedCurPace = (0.68 * recentPace + 0.32 * midPace) / Math.max(0.2, curActivity);
 
       const rNows = [];
       const rPaces = [];
@@ -924,42 +1092,95 @@
         const rNow = currentScore / hCur;
 
         const hTargetT = graph.startTime + pCur * gDur;
-        const hRecentPrev = interpScoreAtTime(graph, Math.max(graph.startTime, hTargetT - recentWindowMs)) * eraScale;
-        const hRecentPace = ((hCur - hRecentPrev) / recentWindowMs) * 3600000;
-        const hActivity = getJstHourActivityFactor(hTargetT);
-        const hNormPace = hRecentPace / Math.max(0.2, hActivity);
-        const rPace = hNormPace > 0 ? normalizedCurPace / hNormPace : rNow;
+        const hRecentPrev = interpScoreAtTime(graph, Math.max(graph.startTime, hTargetT - zoneWinMs)) * eraScale;
+        const hRecentPace = ((hCur - hRecentPrev) / zoneWinMs) * 3600000;
+        const hActivity = getWindowAvgJstActivity(graph, hTargetT, zoneWinMs);
+        const hNormPace = hRecentPace / hActivity;
+        const rawRPace = hNormPace > 0 ? normalizedCurPace / hNormPace : rNow;
+
+        // 時間帯別の許容ズレ上限でクランプし、早朝ノイズの暴走を遮断
+        const rPace = Math.max(rNow * zoneCfg.clampLo, Math.min(rNow * zoneCfg.clampHi, rawRPace));
+
+        // 上限アンカー判定用の過去同時点6h平均時速
+        const h6Prev = interpScoreAtTime(graph, Math.max(graph.startTime, hTargetT - win6hMs)) * eraScale;
+        const hPace6h = ((hCur - h6Prev) / Math.max(1, win6hMs)) * 3600000;
 
         rNows.push(rNow);
         rPaces.push(rPace);
-        refCalcs.push({ item, graph, monthsAgo, eraScale, rawHCur, rawHFinal, hCur, hFinal, rNow, rPace });
+        refCalcs.push({
+          item,
+          graph,
+          monthsAgo,
+          eraScale,
+          rawHCur,
+          rawHFinal,
+          hCur,
+          hFinal,
+          rNow,
+          rPace,
+          hPace6h
+        });
       }
 
       const medRNow = calcMedian(rNows);
       const medRPace = calcMedian(rPaces);
       const liveHeat = wLevelWeight * medRNow + wPaceWeight * medRPace;
-      const momentumRatio = medRPace / Math.max(0.3, medRNow);
 
-      const alpha = Number(targetRank) <= 1000 ? 0.34 : 0.05;
-      const betaMom = 0.05;
-      const clampedHeat = Math.max(0.60, Math.min(2.30, liveHeat));
-      const clampedMom = Math.max(0.75, Math.min(1.35, momentumRatio));
+      if (refCalcs.length > 0) {
+        let heatTierLabel = "標準";
+        if (liveHeat >= 1.55) heatTierLabel = "超激戦";
+        else if (liveHeat >= 1.20) heatTierLabel = "激戦";
+        else if (liveHeat < 0.85) heatTierLabel = "穏やか";
+        diagTags.unshift(`自動熱量: ${heatTierLabel}(${liveHeat.toFixed(2)}x)`);
+      }
+
+      // 4. キャリブレーション済み順位帯別弾性指数 & 1時間ブロック区間積算
+      const alpha = Number(targetRank) <= 1000 ? 0.08 : 0.07;
+      const clampedHeat = Math.max(0.65, Math.min(2.20, liveHeat));
       const remDamp = Math.pow(Math.max(0, 1.0 - pCur), 0.75);
-      const tierElasticity = Math.pow(clampedHeat, alpha * remDamp) * Math.pow(clampedMom, betaMom * remDamp);
+      const tierElasticity = Math.pow(clampedHeat, alpha * remDamp);
 
+      const gridSteps = 96;
       const refModels = [];
+
       for (const rc of refCalcs) {
-        const { item, graph, monthsAgo, eraScale, rawHCur, rawHFinal, hCur, hFinal, rNow, rPace } = rc;
-        const remainingDamp = 1.0 - pCur * 0.45;
-        const totalExternalAdj = 1.0 + (resourceFactor - 1.0) * remainingDamp;
+        const { item, graph, monthsAgo, eraScale, rawHCur, rawHFinal, hCur, hFinal, rNow, rPace, hPace6h } = rc;
+
+        const refFatigue = getChapterFatigueFactor(item);
+        const relFatigue = targetFatigue / Math.max(0.5, refFatigue);
         const baseMultiplier = wLevelWeight * rNow + wPaceWeight * rPace;
-        const multiplier = baseMultiplier * tierElasticity * totalExternalAdj;
-        const impliedFinal = isFinished ? currentScore : currentScore + (hFinal - hCur) * multiplier;
+        const envMultiplier = weekendEndFactor * resourceFactor * trendFactor * relFatigue;
+
+        const stepCurve = [currentScore];
+        let accScore = currentScore;
+        let prevH = hCur;
+
+        if (!isFinished) {
+          for (let s = 1; s <= gridSteps; s++) {
+            const pStep = pCur + ((1 - pCur) * s) / gridSteps;
+            const pMid = pCur + ((1 - pCur) * (s - 0.5)) / gridSteps;
+            const hStep = interpScoreAtProgress(graph, pStep) * eraScale;
+            const dh = Math.max(0, hStep - prevH);
+            prevH = hStep;
+
+            const remHMid = ((1 - pMid) * dur) / 3600000;
+            // 巡航区間（残4h超）では弾性加速を抑え、終盤4h区間のみフル弾性を適用
+            const stepElasticity = remHMid <= 4.0
+              ? tierElasticity
+              : 1.0 + (tierElasticity - 1.0) * 0.25;
+
+            accScore += dh * baseMultiplier * envMultiplier * stepElasticity;
+            stepCurve.push(accScore);
+          }
+        }
+
+        const impliedFinal = isFinished ? currentScore : accScore;
+        const effectiveMultiplier = (impliedFinal - currentScore) / Math.max(1, hFinal - hCur);
 
         const recencyWeight = Math.exp(-Math.abs(monthsAgo) / 6.0);
         let simWeight = 1.0;
-        const refEndHour = new Date(graph.endTime + 9 * 3600 * 1000).getUTCHours();
-        const refStartDay = new Date(graph.startTime + 9 * 3600 * 1000).getUTCDay();
+        const refEndHour = getJstHour(graph.endTime);
+        const refStartDay = getJstDayOfWeek(graph.startTime);
         if (Math.abs(item.durationH - targetItem.durationH) < 2) simWeight += 0.7;
         if (refEndHour === targetEndHour) simWeight += 0.7;
         if (refStartDay === targetStartDay) simWeight += 1.2;
@@ -977,15 +1198,17 @@
           hFinal: rawHFinal,
           adjHCur: hCur,
           adjHFinal: hFinal,
-          multiplier,
+          hPace6h,
+          surgeRatio: hFinal / hCur,
+          multiplier: effectiveMultiplier,
           impliedFinal,
-          weight,
+          stepCurve,
+          weight
         });
       }
 
       refModels.sort((a, b) => b.weight - a.weight);
 
-      const gridSteps = 96;
       const forecastSeries = [];
       let centralFinal = currentScore;
       let minFinal = currentScore;
@@ -993,12 +1216,35 @@
 
       if (!isFinished && refModels.length > 0) {
         const totalW = refModels.reduce((acc, m) => acc + m.weight, 0);
-        centralFinal = refModels.reduce((acc, m) => acc + m.impliedFinal * m.weight, 0) / totalW;
+        const rawCentralFinal = refModels.reduce((acc, m) => acc + m.impliedFinal * m.weight, 0) / totalW;
+        centralFinal = rawCentralFinal;
 
-        const variance =
-          refModels.reduce((acc, m) => acc + m.weight * Math.pow(m.impliedFinal - centralFinal, 2), 0) / totalW;
+        // 5. 上限アンカー制約（直近6h時速が上回る根拠がない場合、直近上位イベントを+4.5%以上ぶち抜かない）
+        const upperAnchors = refModels
+          .filter(m => m.adjHCur >= currentScore * 0.98)
+          .sort((a, b) => a.adjHCur - b.adjHCur);
+
+        let anchorScale = 1.0;
+        if (upperAnchors.length > 0) {
+          const ua = upperAnchors[0];
+          if (pace6h <= ua.hPace6h * 1.02) {
+            const capVal = ua.adjHFinal * 1.045;
+            if (centralFinal > capVal) {
+              const rawGain = rawCentralFinal - currentScore;
+              const cappedGain = Math.max(0, capVal - currentScore);
+              anchorScale = rawGain > 0 ? cappedGain / rawGain : 1.0;
+              centralFinal = capVal;
+              diagTags.push(`上限アンカー抑制(${ua.item.shortLabel}基準)`);
+            }
+          }
+        }
+
+        const variance = refModels.reduce((acc, m) => {
+          const adjImp = currentScore + (m.impliedFinal - currentScore) * anchorScale;
+          return acc + m.weight * Math.pow(adjImp - centralFinal, 2);
+        }, 0) / totalW;
         const stdDev = Math.sqrt(variance);
-        const spreadMargin = Math.max(stdDev * 1.10, (centralFinal - currentScore) * 0.07);
+        const spreadMargin = Math.max(stdDev * 1.05, (centralFinal - currentScore) * 0.065);
 
         minFinal = Math.max(currentScore, centralFinal - spreadMargin);
         maxFinal = centralFinal + spreadMargin;
@@ -1006,16 +1252,21 @@
         for (let i = 0; i <= gridSteps; i++) {
           const p = pCur + ((1 - pCur) * i) / gridSteps;
           if (i === 0) {
-            forecastSeries.push({ p, elapsedH: (p * dur) / 3600000, central: currentScore, min: currentScore, max: currentScore });
+            forecastSeries.push({
+              p,
+              elapsedH: (p * dur) / 3600000,
+              central: currentScore,
+              min: currentScore,
+              max: currentScore
+            });
             continue;
           }
           let wSum = 0;
           for (const m of refModels) {
-            const adjHAtP = interpScoreAtProgress(m.graph, p) * m.eraScale;
-            const predAtP = currentScore + (adjHAtP - m.adjHCur) * m.multiplier;
-            wSum += predAtP * m.weight;
+            wSum += m.stepCurve[i] * m.weight;
           }
-          const cVal = wSum / totalW;
+          const rawCVal = wSum / totalW;
+          const cVal = currentScore + (rawCVal - currentScore) * anchorScale;
           const stepRatio = (p - pCur) / Math.max(1e-4, 1 - pCur);
           const curMargin = spreadMargin * Math.pow(stepRatio, 0.85);
           forecastSeries.push({
@@ -1023,7 +1274,7 @@
             elapsedH: (p * dur) / 3600000,
             central: cVal,
             min: Math.max(currentScore, cVal - curMargin),
-            max: cVal + curMargin,
+            max: cVal + curMargin
           });
         }
       } else if (!isFinished) {
@@ -1044,7 +1295,7 @@
         rank: targetRank,
         currentScore,
         lastT,
-        elapsedH: elapsedMs / 3600000,
+        elapsedH,
         totalH: dur / 3600000,
         pCur,
         isFinished,
@@ -1054,8 +1305,10 @@
         minFinal,
         maxFinal,
         halfSpread,
+        liveHeat,
+        diagTags,
         forecastSeries,
-        refModels,
+        refModels
       };
     }
 
@@ -1955,207 +2208,4 @@
       }
 
       const tPts = pred.targetGraph.tier;
-      const tDur = pred.targetGraph.endTime - pred.targetGraph.startTime;
-      ctx.save();
-      if (theme.rainbow) {
-        const lineGrad = ctx.createLinearGradient(plotX, 0, plotX + plotW, 0);
-        lineGrad.addColorStop(0, "#ff4d6d");
-        lineGrad.addColorStop(0.3, "#ffb703");
-        lineGrad.addColorStop(0.6, "#06d6a0");
-        lineGrad.addColorStop(1, "#3a86ff");
-        ctx.strokeStyle = lineGrad;
-      } else {
-        ctx.strokeStyle = theme.accent;
-      }
-      ctx.lineWidth = 3.8;
-      if (theme.sparkle) {
-        ctx.shadowColor = theme.glowColor;
-        ctx.shadowBlur = 12;
-      }
-      ctx.beginPath();
-      const step = Math.max(1, Math.floor(tPts.length / 180));
-      for (let i = 0; i < tPts.length; i += step) {
-        const [t, v] = tPts[i];
-        const px = xOf((t - pred.targetGraph.startTime) / tDur);
-        const py = yOf(v);
-        if (i === 0) ctx.moveTo(px, py);
-        else ctx.lineTo(px, py);
-      }
-      const [lt, lv] = tPts[tPts.length - 1];
-      const lx = xOf((lt - pred.targetGraph.startTime) / tDur);
-      const ly = yOf(lv);
-      ctx.lineTo(lx, ly);
-      ctx.stroke();
-
-      ctx.fillStyle = "#ffffff";
-      ctx.beginPath();
-      ctx.arc(lx, ly, 5.5, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-
-      const endY = yOf(pred.centralFinal);
-      ctx.save();
-      ctx.fillStyle = theme.forecast;
-      ctx.beginPath();
-      ctx.arc(xOf(1), endY, 5.5, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-    }
-
-    // =========================================================================
-    // 7. UI 描画・コントロール制御・一斉配信
-    // =========================================================================
-    function renderAllUI() {
-      const evSel = document.getElementById("targetEventSelect");
-      evSel.innerHTML = "";
-      for (const item of state.eligibleItems) {
-        const opt = document.createElement("option");
-        opt.value = item.key;
-        opt.textContent = item.label;
-        evSel.appendChild(opt);
-      }
-      if (state.selectedKey) evSel.value = state.selectedKey;
-
-      const ranks = [];
-      for (const k of state.graphCache.keys()) {
-        if (k.startsWith(`${state.selectedKey}::`)) {
-          ranks.push(Number(k.split("::").pop()));
-        }
-      }
-      document.getElementById("cachedRanksInfo").textContent =
-        ranks.length > 0
-          ? `選択中イベントの取得済み順位: ${ranks.sort((a, b) => a - b).map((r) => "T" + r.toLocaleString()).join(", ")}`
-          : "選択中イベントのグラフデータはまだ取得されていません。";
-
-      renderSlotEditor();
-      updateTextPreviews();
-      renderActiveCanvas();
-    }
-
-    function renderSlotEditor() {
-      const editor = document.getElementById("slotEditor");
-      editor.innerHTML = "";
-      const rankOptions = [100, 500, 1000, 5000, 10000, 50000, 100000, 200000];
-
-      const makeRankSelect = (val, onChange) => {
-        const s = document.createElement("select");
-        rankOptions.forEach((r) => {
-          const o = document.createElement("option");
-          o.value = r;
-          o.textContent = `T${r.toLocaleString()}`;
-          if (Number(val) === r) o.selected = true;
-          s.appendChild(o);
-        });
-        s.onchange = (e) => { onChange(Number(e.target.value)); renderActiveCanvas(); };
-        return s;
-      };
-
-      const makeEventSelect = (val, onChange) => {
-        const s = document.createElement("select");
-        state.eligibleItems.forEach((it) => {
-          const o = document.createElement("option");
-          o.value = it.key;
-          o.textContent = it.shortLabel;
-          if (val === it.key) o.selected = true;
-          s.appendChild(o);
-        });
-        s.onchange = (e) => { onChange(e.target.value); renderActiveCanvas(); };
-        return s;
-      };
-
-      if (state.mode === "single") {
-        const row = document.createElement("div");
-        row.className = "row";
-        row.append(
-          "表示対象: ",
-          makeEventSelect(state.single.key, (k) => (state.single.key = k)),
-          makeRankSelect(state.single.rank, (r) => (state.single.rank = r))
-        );
-        editor.appendChild(row);
-      } else if (state.mode === "dual") {
-        ["左枠", "右枠"].forEach((lbl, idx) => {
-          const row = document.createElement("div");
-          row.className = "row";
-          row.append(
-            `${lbl}: `,
-            makeEventSelect(state.dual[idx].key, (k) => (state.dual[idx].key = k)),
-            makeRankSelect(state.dual[idx].rank, (r) => (state.dual[idx].rank = r))
-          );
-          editor.appendChild(row);
-        });
-      } else {
-        ["左枠（標準: ドリーム級）", "中央枠（標準: ダイヤ級）", "右枠（標準: プラチナ級）"].forEach((lbl, idx) => {
-          const row = document.createElement("div");
-          row.className = "row";
-          row.append(
-            `${lbl}: `,
-            makeEventSelect(state.triple[idx].key, (k) => (state.triple[idx].key = k)),
-            makeRankSelect(state.triple[idx].rank, (r) => (state.triple[idx].rank = r))
-          );
-          editor.appendChild(row);
-        });
-      }
-    }
-
-    function onModeOrThemeChanged() {
-      state.mode = document.getElementById("modeSelect").value;
-      state.themeOverride = document.getElementById("themeSelect").value;
-      renderSlotEditor();
-      renderActiveCanvas();
-    }
-
-    document.getElementById("targetEventSelect").addEventListener("change", (e) => {
-      const newKey = e.target.value;
-      state.selectedKey = newKey;
-      state.single.key = newKey;
-      state.dual.forEach((s) => (s.key = newKey));
-      state.triple.forEach((s) => (s.key = newKey));
-      renderAllUI();
-    });
-
-    async function triggerBroadcast() {
-      if (!confirm("現在プレビュー中の内容で、購読登録されている全Discordチャンネルへ一斉通知を送信します。よろしいですか？")) {
-        return;
-      }
-
-      const btn = document.getElementById("broadcastBtn");
-      btn.disabled = true;
-      btn.textContent = "送信中...";
-
-      try {
-        const canvas = document.getElementById("reportCanvas");
-        const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
-
-        const formData = new FormData();
-        formData.append("nowBorderText", buildNowBorderText());
-        formData.append("customText", document.getElementById("customTextInput").value.trim());
-        formData.append("customTextPosition", document.getElementById("customTextPosSelect").value);
-        if (blob) {
-          formData.append("image", blob, "border_prediction.png");
-        }
-
-        const res = await apiFetch("/api/admin/broadcast", {
-          method: "POST",
-          body: formData,
-        });
-        const data = await res.json();
-        if (data.ok) {
-          showToast(data.message);
-        } else {
-          alert("送信エラー: " + (data.error || "不明なエラー"));
-        }
-      } catch (err) {
-        alert("通信エラー: " + err.message);
-      } finally {
-        btn.disabled = false;
-        btn.textContent = "🚀 Botに反映（登録チャンネルへ一斉通知）";
-      }
-    }
-
-    if (adminPassword) {
-      document.getElementById("loginOverlay").style.display = "none";
-      initializeApp();
-    }
-  </script>
-</body>
-</html>
+      const tDur = pred.targetGraph.endTime - pred.targetGraph.start
