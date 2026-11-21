@@ -1,283 +1,481 @@
-require("dotenv").config();
-const path = require("path");
 const express = require("express");
+const path = require("path");
 const multer = require("multer");
 const {
   Client,
   GatewayIntentBits,
   REST,
   Routes,
+  SlashCommandBuilder,
   AttachmentBuilder,
-  Events,
 } = require("discord.js");
-const { DataStore } = require("./store");
-const { commands } = require("./commands");
+
+const app = express();
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } });
 
 const PORT = Number(process.env.SERVER_PORT || process.env.PORT) || 8000;
+const DISCORD_TOKEN = process.env.DISCORD_TOKEN || "";
+const DISCORD_CLIENT_ID = process.env.DISCORD_CLIENT_ID || "";
+const UPSTASH_URL = (process.env.UPSTASH_REDIS_REST_URL || "").replace(/\/+$/, "");
+const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || "";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "2226";
 
-const store = new DataStore();
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 8 * 1024 * 1024 }, // 最大8MB
-});
+const DAYS_JP = ["日", "月", "火", "水", "木", "金", "土"];
+const TIER_DEFS = [
+  { rank: 1000, label: "ドリーム級" },
+  { rank: 5000, label: "ダイヤ級" },
+  { rank: 10000, label: "プラチナ級" },
+];
 
 // =========================================================================
-// 1. Discord Bot セットアップ
+// 1. Upstash Redis & メモリキャッシュ層
+// =========================================================================
+const memStore = {
+  events: [],
+  graphs: {},
+  subscriptions: [],
+  nowBorderCache: null,   // { text, timeLabel, updatedAt }
+  predictionCache: null,  // { imageBase64, timeLabel, updatedAt }
+};
+
+async function redisCommand(args) {
+  if (!UPSTASH_URL || !UPSTASH_TOKEN) return null;
+  try {
+    const res = await fetch(UPSTASH_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${UPSTASH_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(args),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.result ?? null;
+  } catch (err) {
+    console.error("[Redis] 通信エラー:", err.message);
+    return null;
+  }
+}
+
+async function loadStateFromRedis() {
+  const [evRaw, grRaw, subRaw, nbRaw, prRaw] = await Promise.all([
+    redisCommand(["GET", "borderbot:events"]),
+    redisCommand(["GET", "borderbot:graphs"]),
+    redisCommand(["GET", "borderbot:subscriptions"]),
+    redisCommand(["GET", "borderbot:cache:nowborder"]),
+    redisCommand(["GET", "borderbot:cache:prediction"]),
+  ]);
+
+  if (evRaw) {
+    try { memStore.events = JSON.parse(evRaw); } catch (_) {}
+  }
+  if (grRaw) {
+    try { memStore.graphs = JSON.parse(grRaw); } catch (_) {}
+  }
+  if (subRaw) {
+    try { memStore.subscriptions = JSON.parse(subRaw); } catch (_) {}
+  }
+  if (nbRaw) {
+    try { memStore.nowBorderCache = JSON.parse(nbRaw); } catch (_) {}
+  }
+  if (prRaw) {
+    try { memStore.predictionCache = JSON.parse(prRaw); } catch (_) {}
+  }
+}
+
+async function saveRedisJson(key, value) {
+  await redisCommand(["SET", key, JSON.stringify(value)]);
+}
+
+// =========================================================================
+// 2. NowBorder テキスト自動生成ヘルパー（5分丸め ＋ 万単位四捨五入）
+// =========================================================================
+function formatRoundedJstTime(ms) {
+  const jst = new Date(ms + 9 * 3600 * 1000);
+  const hh = jst.getUTCHours();
+  const mm = jst.getUTCMinutes();
+  const totalMinutes = hh * 60 + mm;
+  const roundedTotalMinutes = Math.round(totalMinutes / 5) * 5;
+  const finalHour = Math.floor(roundedTotalMinutes / 60) % 24;
+  const finalMin = roundedTotalMinutes % 60;
+  return finalMin === 0 ? `${finalHour}時` : `${finalHour}時${finalMin}分`;
+}
+
+function formatManRounded(score) {
+  if (score == null || Number.isNaN(score)) return "未取得";
+  return `${Math.round(score / 10000)}万`;
+}
+
+function rebuildNowBorderCacheFromGraphs(targetPrefix = null) {
+  const keys = Object.keys(memStore.graphs);
+  if (keys.length === 0) return memStore.nowBorderCache;
+
+  // prefix が未指定の場合、最も新しいデータ時刻を持つイベントキーを自動選択
+  let chosenPrefix = targetPrefix;
+  if (!chosenPrefix) {
+    let newestTs = -1;
+    for (const k of keys) {
+      const g = memStore.graphs[k];
+      if (!g || !Array.isArray(g.tier) || g.tier.length === 0) continue;
+      const lastT = g.tier[g.tier.length - 1][0];
+      if (lastT > newestTs) {
+        newestTs = lastT;
+        chosenPrefix = k.replace(/::\d+$/, "");
+      }
+    }
+  }
+  if (!chosenPrefix) return memStore.nowBorderCache;
+
+  let latestTimestamp = 0;
+  const lines = [];
+
+  for (const tier of TIER_DEFS) {
+    const g = memStore.graphs[`${chosenPrefix}::${tier.rank}`];
+    if (g && Array.isArray(g.tier) && g.tier.length > 0) {
+      const [lastT, lastVal] = g.tier[g.tier.length - 1];
+      if (lastT > latestTimestamp) latestTimestamp = lastT;
+      lines.push(`${tier.label} ${formatManRounded(lastVal)}`);
+    } else {
+      lines.push(`${tier.label} 未取得`);
+    }
+  }
+
+  if (latestTimestamp === 0) return memStore.nowBorderCache;
+
+  const timeLabel = formatRoundedJstTime(latestTimestamp);
+  const text = [`最終更新(${timeLabel})時点のボーダーです！`, ...lines].join("\n");
+  const cacheObj = {
+    text,
+    timeLabel,
+    updatedAt: latestTimestamp,
+  };
+  memStore.nowBorderCache = cacheObj;
+  saveRedisJson("borderbot:cache:nowborder", cacheObj).catch(() => {});
+  return cacheObj;
+}
+
+// =========================================================================
+// 3. Discord Bot ＆ スラッシュコマンド設定
 // =========================================================================
 const client = new Client({
   intents: [GatewayIntentBits.Guilds],
 });
 
+const slashCommands = [
+  new SlashCommandBuilder()
+    .setName("subscribe")
+    .setDescription("このチャンネルにボーダー予測の一斉通知を登録します"),
+  new SlashCommandBuilder()
+    .setName("unsubscribe")
+    .setDescription("このチャンネルのボーダー予測通知を解除します"),
+  new SlashCommandBuilder()
+    .setName("prediction")
+    .setDescription("最後にキャッシュされたボーダー予測画像をすぐに通知します"),
+  new SlashCommandBuilder()
+    .setName("nowborder")
+    .setDescription("最新のキャッシュ済み現在ボーダーをすぐに通知します"),
+  new SlashCommandBuilder()
+    .setName("border")
+    .setDescription("最新の現在ボーダーと予測画像をまとめてすぐに通知します"),
+].map((cmd) => cmd.toJSON());
+
 async function registerSlashCommands() {
-  if (!process.env.DISCORD_TOKEN || !process.env.DISCORD_CLIENT_ID) {
-    console.warn("[Discord] DISCORD_TOKEN または DISCORD_CLIENT_ID が未設定です。");
-    return;
+  if (!DISCORD_TOKEN || !DISCORD_CLIENT_ID) return;
+  try {
+    const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
+    await rest.put(Routes.applicationCommands(DISCORD_CLIENT_ID), {
+      body: slashCommands,
+    });
+    console.log("[Discord] スラッシュコマンド登録完了 (/subscribe, /unsubscribe, /prediction, /nowborder, /border)");
+  } catch (err) {
+    console.error("[Discord] コマンド登録エラー:", err);
   }
-  const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
-  await rest.put(Routes.applicationCommands(process.env.DISCORD_CLIENT_ID), {
-    body: commands.map((c) => c.toJSON()),
-  });
-  console.log("[Discord] スラッシュコマンド（/subscribe, /unsubscribe）を登録しました。");
 }
 
-client.once(Events.ClientReady, (c) => {
-  console.log(`[Discord] ログイン完了: ${c.user.tag}`);
+client.once("ready", async () => {
+  console.log(`[Discord] ログイン完了: ${client.user.tag}`);
+  await registerSlashCommands();
 });
 
-client.on(Events.InteractionCreate, async (interaction) => {
+client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
-  try {
-    if (interaction.commandName === "subscribe") {
-      const nowBorder = interaction.options.getBoolean("now_border", true);
-      const borderPrediction = interaction.options.getBoolean("border_prediction", true);
+  const { commandName, channelId } = interaction;
 
-      if (!nowBorder && !borderPrediction) {
-        await store.removeSubscription(interaction.channelId);
+  try {
+    if (commandName === "subscribe") {
+      if (!memStore.subscriptions.includes(channelId)) {
+        memStore.subscriptions.push(channelId);
+        await saveRedisJson("borderbot:subscriptions", memStore.subscriptions);
+      }
+      await interaction.reply({
+        content: "✅ このチャンネルをボーダー予測の一斉通知先に登録しました。",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    if (commandName === "unsubscribe") {
+      memStore.subscriptions = memStore.subscriptions.filter((id) => id !== channelId);
+      await saveRedisJson("borderbot:subscriptions", memStore.subscriptions);
+      await interaction.reply({
+        content: "🔕 このチャンネルのボーダー予測通知を解除しました。",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    if (commandName === "prediction") {
+      const pred = memStore.predictionCache;
+      if (!pred || !pred.imageBase64) {
         await interaction.reply({
-          content: "両方のオプションが `False` のため、このチャンネルのボーダー通知を解除しました。",
+          content: "⚠️ まだ予測画像がキャッシュされていません。管理画面でデータを読み込むか通知を実行してください。",
+          ephemeral: true,
+        });
+        return;
+      }
+      const imgBuffer = Buffer.from(pred.imageBase64, "base64");
+      const attachment = new AttachmentBuilder(imgBuffer, { name: "border_prediction.png" });
+      await interaction.reply({
+        content: `最終更新(${pred.timeLabel})時点のボーダー予測です！`,
+        files: [attachment],
+      });
+      return;
+    }
+
+    if (commandName === "nowborder") {
+      const nb = memStore.nowBorderCache || rebuildNowBorderCacheFromGraphs();
+      if (!nb || !nb.text) {
+        await interaction.reply({
+          content: "⚠️ まだボーダーデータがキャッシュされていません。",
+          ephemeral: true,
+        });
+        return;
+      }
+      await interaction.reply({
+        content: nb.text,
+      });
+      return;
+    }
+
+    if (commandName === "border") {
+      const nb = memStore.nowBorderCache || rebuildNowBorderCacheFromGraphs();
+      const pred = memStore.predictionCache;
+
+      if ((!nb || !nb.text) && (!pred || !pred.imageBase64)) {
+        await interaction.reply({
+          content: "⚠️ まだボーダーデータおよび予測画像がキャッシュされていません。",
           ephemeral: true,
         });
         return;
       }
 
-      await store.setSubscription(
-        interaction.channelId,
-        interaction.guildId || "DM",
-        nowBorder,
-        borderPrediction
-      );
-
-      const modes = [];
-      if (nowBorder) modes.push("最新ボーダーテキスト（NowBorder）");
-      if (borderPrediction) modes.push("着地予測レポート画像（BorderPrediction）");
+      const content = nb && nb.text
+        ? nb.text
+        : `最終更新(${pred.timeLabel})時点のボーダー予測です！`;
+      const files = [];
+      if (pred && pred.imageBase64) {
+        const imgBuffer = Buffer.from(pred.imageBase64, "base64");
+        files.push(new AttachmentBuilder(imgBuffer, { name: "border_prediction.png" }));
+      }
 
       await interaction.reply({
-        content: `✅ このチャンネルをボーダー通知先に登録しました。\n・配信内容: **${modes.join(" ＋ ")}**\n・管理画面から「Botに反映」が実行されると自動通知されます。`,
-        ephemeral: true,
+        content,
+        files,
       });
-    } else if (interaction.commandName === "unsubscribe") {
-      const removed = await store.removeSubscription(interaction.channelId);
-      await interaction.reply({
-        content: removed
-          ? "🔕 このチャンネルのボーダー通知を解除しました。"
-          : "このチャンネルは通知リストに登録されていません。",
-        ephemeral: true,
-      });
+      return;
     }
   } catch (err) {
-    console.error("[Discord] コマンド処理エラー:", err);
-    if (!interaction.replied) {
-      await interaction.reply({ content: "エラーが発生しました。", ephemeral: true });
+    console.error(`[Discord] コマンド処理エラー (${commandName}):`, err);
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.reply({
+        content: "⚠️ コマンドの実行中にエラーが発生しました。",
+        ephemeral: true,
+      }).catch(() => {});
     }
   }
 });
 
 // =========================================================================
-// 2. Express 管理画面 ＆ 軽量APIサーバー
+// 4. Express Webサーバー ＆ 管理画面API
 // =========================================================================
-const app = express();
-app.use(express.json({ limit: "6mb" }));
+app.use(express.json({ limit: "10mb" }));
+app.use(express.static(path.join(__dirname, "../public")));
 
-// Northflank ヘルスチェック用（認証不要）
-app.get("/health", (_req, res) => {
-  res.status(200).json({ ok: true, status: "running" });
-});
-
-// 管理画面HTML配信
-app.get("/", (_req, res) => {
-  res.sendFile(path.join(process.cwd(), "public", "admin.html"));
-});
-
-// 認証ミドルウェア
-function requireAdminAuth(req, res, next) {
+function requireAdmin(req, res, next) {
   const pw = req.headers["x-admin-password"];
-  if (String(pw) !== String(ADMIN_PASSWORD)) {
-    return res.status(401).json({ ok: false, error: "パスワードが正しくありません。" });
+  if (pw !== ADMIN_PASSWORD) {
+    return res.status(401).json({ error: "Unauthorized" });
   }
   next();
 }
 
-// ログイン確認
-app.post("/api/admin/login", (req, res) => {
-  const { password } = req.body || {};
-  if (String(password) === String(ADMIN_PASSWORD)) {
-    return res.json({ ok: true });
-  }
-  return res.status(401).json({ ok: false, error: "パスワードが違います。" });
+app.get("/health", (_req, res) => {
+  res.status(200).json({ ok: true, time: Date.now() });
 });
 
-// キャッシュ状態と購読数を取得
-app.get("/api/admin/bootstrap", requireAdminAuth, (_req, res) => {
+app.get("/", (_req, res) => {
+  res.sendFile(path.join(__dirname, "../public/admin.html"));
+});
+
+app.post("/api/admin/login", (req, res) => {
+  const { password } = req.body || {};
+  if (password === ADMIN_PASSWORD) {
+    return res.json({ ok: true });
+  }
+  return res.status(401).json({ error: "Invalid password" });
+});
+
+app.get("/api/admin/bootstrap", requireAdmin, (_req, res) => {
   res.json({
-    ok: true,
-    events: store.events,
-    graphs: store.graphs,
-    subscriptionCount: store.subscriptions.size,
+    events: memStore.events,
+    graphs: memStore.graphs,
+    subscriptionCount: memStore.subscriptions.length,
+    nowBorderCache: memStore.nowBorderCache
+      ? { text: memStore.nowBorderCache.text, timeLabel: memStore.nowBorderCache.timeLabel }
+      : null,
+    predictionCacheMeta: memStore.predictionCache
+      ? { timeLabel: memStore.predictionCache.timeLabel, updatedAt: memStore.predictionCache.updatedAt }
+      : null,
   });
 });
 
-// イベント一覧キャッシュの保存
-app.post("/api/admin/cache-events", requireAdminAuth, async (req, res) => {
-  try {
-    const { events } = req.body || {};
-    if (!Array.isArray(events)) {
-      return res.status(400).json({ ok: false, error: "events 配列が不正です。" });
-    }
-    await store.saveEvents(events);
-    res.json({ ok: true, count: events.length });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+app.post("/api/admin/cache-events", requireAdmin, async (req, res) => {
+  const { events } = req.body || {};
+  if (!Array.isArray(events)) {
+    return res.status(400).json({ error: "Invalid events" });
   }
+  memStore.events = events;
+  await saveRedisJson("borderbot:events", events);
+  res.json({ ok: true });
 });
 
-// グラフデータキャッシュの保存
-app.post("/api/admin/cache-graph", requireAdminAuth, async (req, res) => {
-  try {
-    const { cacheKey, graph } = req.body || {};
-    if (!cacheKey || !graph || !Array.isArray(graph.tier)) {
-      return res.status(400).json({ ok: false, error: "グラフデータが不正です。" });
-    }
-    await store.saveGraphEntry(cacheKey, graph);
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+app.post("/api/admin/cache-graph", requireAdmin, async (req, res) => {
+  const { cacheKey, graph } = req.body || {};
+  if (!cacheKey || !graph) {
+    return res.status(400).json({ error: "Invalid graph payload" });
   }
+  memStore.graphs[cacheKey] = graph;
+  await saveRedisJson("borderbot:graphs", memStore.graphs);
+
+  const prefix = cacheKey.replace(/::\d+$/, "");
+  rebuildNowBorderCacheFromGraphs(prefix);
+
+  res.json({ ok: true });
 });
 
-// 「Botに反映」一斉通知エンドポイント（パターンA: 画像下テキスト時は2通分割送信）
-app.post(
-  "/api/admin/broadcast",
-  requireAdminAuth,
-  upload.single("image"),
-  async (req, res) => {
+// 管理画面から予測画像キャッシュのみを静かに更新するエンドポイント
+app.post("/api/admin/cache-prediction", requireAdmin, upload.single("image"), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: "No image uploaded" });
+  }
+  const timeLabel = (req.body.timeLabel || formatRoundedJstTime(Date.now())).trim();
+  const cacheObj = {
+    imageBase64: req.file.buffer.toString("base64"),
+    timeLabel,
+    updatedAt: Date.now(),
+  };
+  memStore.predictionCache = cacheObj;
+  await saveRedisJson("borderbot:cache:prediction", cacheObj);
+  res.json({ ok: true, timeLabel });
+});
+
+// 登録チャンネルへの一斉通知（Pattern A）＋ キャッシュ同時更新
+app.post("/api/admin/broadcast", requireAdmin, upload.single("image"), async (req, res) => {
+  const nowBorderText = (req.body.nowBorderText || "").trim();
+  const customText = (req.body.customText || "").trim();
+  const customTextPosition = req.body.customTextPosition || "below";
+  const imageBuffer = req.file ? req.file.buffer : null;
+
+  // キャッシュも最新状態に更新
+  if (nowBorderText) {
+    const m = /最終更新\(([^)]+)\)/.exec(nowBorderText);
+    const timeLabel = m ? m[1] : formatRoundedJstTime(Date.now());
+    memStore.nowBorderCache = {
+      text: nowBorderText,
+      timeLabel,
+      updatedAt: Date.now(),
+    };
+    await saveRedisJson("borderbot:cache:nowborder", memStore.nowBorderCache);
+  }
+
+  if (imageBuffer) {
+    const m = /最終更新\(([^)]+)\)/.exec(nowBorderText);
+    const timeLabel = m ? m[1] : formatRoundedJstTime(Date.now());
+    memStore.predictionCache = {
+      imageBase64: imageBuffer.toString("base64"),
+      timeLabel,
+      updatedAt: Date.now(),
+    };
+    await saveRedisJson("borderbot:cache:prediction", memStore.predictionCache);
+  }
+
+  if (memStore.subscriptions.length === 0) {
+    return res.json({
+      ok: true,
+      message: "キャッシュを更新しました（通知購読チャンネルは現在0件です）。",
+    });
+  }
+
+  let successCount = 0;
+  let failCount = 0;
+
+  for (const chId of memStore.subscriptions) {
     try {
-      const subs = Array.from(store.subscriptions.values());
-      if (subs.length === 0) {
-        return res.json({
-          ok: true,
-          sentCount: 0,
-          failedCount: 0,
-          message: "購読登録されているチャンネルが0件のため、送信をスキップされました。",
-        });
+      const channel = await client.channels.fetch(chId);
+      if (!channel || !channel.isTextBased()) {
+        failCount++;
+        continue;
       }
 
-      const nowBorderText = (req.body.nowBorderText || "").trim();
-      const customText = (req.body.customText || "").trim();
-      const customTextPosition = req.body.customTextPosition === "above" ? "above" : "below";
-      const imageBuffer = req.file ? req.file.buffer : null;
-      const fileName = `border_prediction_${Date.now()}.png`;
+      const files = imageBuffer
+        ? [new AttachmentBuilder(imageBuffer, { name: "border_prediction.png" })]
+        : [];
 
-      let sentCount = 0;
-      let failedCount = 0;
-
-      for (const sub of subs) {
-        try {
-          const channel = await client.channels.fetch(sub.channelId);
-          if (!channel || !channel.isTextBased()) {
-            failedCount++;
-            continue;
-          }
-
-          const hasNow = Boolean(sub.nowBorder && nowBorderText);
-          const hasImg = Boolean(sub.borderPrediction && imageBuffer);
-          const hasCustom = Boolean(customText);
-
-          // 何も送る要素がないチャンネルはスキップ
-          if (!hasNow && !hasImg && !hasCustom) {
-            continue;
-          }
-
-          if (hasCustom && customTextPosition === "above") {
-            // 【NowBorder の上】1通目の先頭に任意テキストを配置
-            const textParts = [customText];
-            if (hasNow) textParts.push(nowBorderText);
-
-            const payload = {
-              content: textParts.join("\n\n"),
-            };
-            if (hasImg) {
-              payload.files = [new AttachmentBuilder(imageBuffer, { name: fileName })];
-            }
-            await channel.send(payload);
-            sentCount++;
-          } else {
-            // 【BorderPrediction の下（または任意テキストなし）】パターンA：1通目で本体、2通目で任意テキストを送信
-            const firstPayload = {};
-            if (hasNow) {
-              firstPayload.content = nowBorderText;
-            }
-            if (hasImg) {
-              firstPayload.files = [new AttachmentBuilder(imageBuffer, { name: fileName })];
-            }
-
-            if (firstPayload.content || firstPayload.files) {
-              await channel.send(firstPayload);
-            }
-
-            if (hasCustom) {
-              await channel.send({ content: customText });
-            }
-
-            sentCount++;
-          }
-        } catch (sendErr) {
-          console.error(`[Broadcast] チャンネル ${sub.channelId} への送信失敗:`, sendErr.message);
-          failedCount++;
+      if (customText && customTextPosition === "above") {
+        await channel.send({
+          content: `${customText}\n\n${nowBorderText}`,
+          files,
+        });
+      } else {
+        await channel.send({
+          content: nowBorderText,
+          files,
+        });
+        if (customText && customTextPosition === "below") {
+          await channel.send({ content: customText });
         }
       }
-
-      res.json({
-        ok: true,
-        sentCount,
-        failedCount,
-        message: `一斉通知を完了しました（成功: ${sentCount}ch / 失敗: ${failedCount}ch）`,
-      });
+      successCount++;
     } catch (err) {
-      console.error("[Broadcast] 一斉通知エラー:", err);
-      res.status(500).json({ ok: false, error: err.message });
+      console.error(`[Broadcast] 送信失敗 (${chId}):`, err.message);
+      failCount++;
     }
   }
-);
+
+  res.json({
+    ok: true,
+    message: `一斉通知を完了しました（成功: ${successCount}ch / 失敗: ${failCount}ch）`,
+  });
+});
 
 // =========================================================================
-// 3. 起動シーケンス
+// 5. 起動シーケンス
 // =========================================================================
-async function bootstrap() {
-  await store.init();
-  await registerSlashCommands();
+(async () => {
+  await loadStateFromRedis();
+  if (!memStore.nowBorderCache) {
+    rebuildNowBorderCacheFromGraphs();
+  }
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`[Web] 管理画面サーバー起動: http://0.0.0.0:${PORT}`);
   });
 
-  if (process.env.DISCORD_TOKEN) {
-    await client.login(process.env.DISCORD_TOKEN);
+  if (DISCORD_TOKEN) {
+    await client.login(DISCORD_TOKEN);
+  } else {
+    console.warn("[Discord] DISCORD_TOKEN が設定されていません。");
   }
-}
-
-bootstrap().catch((err) => {
-  console.error("[Fatal] 起動失敗:", err);
-  process.exit(1);
-});
+})();
