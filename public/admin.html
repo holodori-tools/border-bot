@@ -1,0 +1,2161 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ボーダー予測Bot 管理コンソール</title>
+  <style>
+    :root {
+      --bg: #f1f5f9;
+      --surface: #ffffff;
+      --border: #cbd5e1;
+      --text: #0f172a;
+      --muted: #475569;
+      --accent: #1d4ed8;
+      --ok: #15803d;
+      --broadcast: #c2410c;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Hiragino Kaku Gothic ProN", "Yu Gothic", "Noto Sans JP", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 14px;
+    }
+    .login-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.88);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+    }
+    .login-card {
+      background: #fff;
+      padding: 28px;
+      border-radius: 8px;
+      width: 340px;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.3);
+    }
+    .login-card h2 { margin: 0 0 12px; font-size: 18px; }
+    .login-card input {
+      width: 100%;
+      height: 38px;
+      padding: 0 12px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      font-size: 15px;
+      margin-bottom: 12px;
+    }
+    header {
+      background: #0f172a;
+      color: #fff;
+      padding: 14px 24px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    header h1 { margin: 0; font-size: 17px; }
+    .status-pills { display: flex; flex-wrap: wrap; gap: 8px; font-size: 12px; }
+    .pill {
+      background: rgba(255,255,255,0.12);
+      padding: 4px 10px;
+      border-radius: 999px;
+    }
+    main {
+      max-width: 1360px;
+      margin: 20px auto 40px;
+      padding: 0 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 16px;
+    }
+    .panel h2 {
+      margin: 0 0 12px;
+      font-size: 15px;
+      border-bottom: 1px solid #e2e8f0;
+      padding-bottom: 8px;
+    }
+    .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    button, select {
+      height: 36px;
+      padding: 0 14px;
+      border-radius: 5px;
+      border: 1px solid var(--border);
+      background: #fff;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:hover { background: #f8fafc; }
+    button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+    button.primary:hover { background: #1e40af; }
+    button.ok { background: var(--ok); color: #fff; border-color: var(--ok); }
+    button.broadcast {
+      background: var(--broadcast);
+      color: #fff;
+      border-color: var(--broadcast);
+      height: 44px;
+      font-size: 15px;
+      padding: 0 24px;
+    }
+    button.broadcast:hover { background: #9a3412; }
+    button.broadcast:disabled { opacity: 0.5; cursor: not-allowed; }
+    .toast {
+      padding: 10px 14px;
+      border-radius: 5px;
+      background: #dcfce7;
+      border: 1px solid #86efac;
+      color: #166534;
+      font-weight: 600;
+      display: none;
+    }
+    .toast.show { display: block; }
+    .preview-grid {
+      display: grid;
+      grid-template-columns: 1.75fr 1fr;
+      gap: 16px;
+      align-items: start;
+    }
+    .preview-img-wrap {
+      background: #090c15;
+      border-radius: 6px;
+      padding: 10px;
+      text-align: center;
+    }
+    canvas#reportCanvas {
+      max-width: 100%;
+      height: auto;
+      border-radius: 4px;
+      display: block;
+      margin: 0 auto;
+    }
+    .text-preview-box {
+      background: #1e293b;
+      color: #f8fafc;
+      padding: 14px;
+      border-radius: 6px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      white-space: pre-wrap;
+      line-height: 1.6;
+      font-size: 14px;
+    }
+    .slot-editor {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 10px;
+      padding: 12px;
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 6px;
+    }
+    .custom-msg-box {
+      margin-top: 12px;
+      padding: 12px;
+      background: #fffbeb;
+      border: 1px solid #fde68a;
+      border-radius: 6px;
+    }
+    textarea {
+      width: 100%;
+      height: 84px;
+      font-family: inherit;
+      font-size: 13px;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      resize: vertical;
+    }
+    @media (max-width: 960px) {
+      .preview-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="login-overlay" id="loginOverlay">
+    <div class="login-card">
+      <h2>管理コンソール ログイン</h2>
+      <input type="password" id="pwInput" placeholder="パスワードを入力" />
+      <button class="primary" style="width:100%;" onclick="doLogin()">ログイン</button>
+      <div id="loginErr" style="color:#dc2626;font-size:12px;margin-top:8px;"></div>
+    </div>
+  </div>
+
+  <header>
+    <h1>イベントボーダー予測Bot 管理コンソール（軽量クライアント描画版）</h1>
+    <div class="status-pills">
+      <span class="pill" id="statArchive">GitHub過去データ: 読込中...</span>
+      <span class="pill" id="statEvents">イベント一覧キャッシュ: -</span>
+      <span class="pill" id="statSubs">通知購読チャンネル: -</span>
+    </div>
+  </header>
+
+  <main>
+    <div class="toast" id="toastBox"></div>
+
+    <!-- Step 1: API取得 & クリップボード自動取込 -->
+    <section class="panel">
+      <h2>1. 最新データ取込（タブを開いて Ctrl+A → Ctrl+C で戻ると自動反映）</h2>
+      <div class="row" style="margin-bottom:10px;">
+        <label style="font-weight:700;">対象イベント:</label>
+        <select id="targetEventSelect" style="min-width:280px;"></select>
+        <button onclick="openListApi()">① イベント一覧API（新イベント時のみ）</button>
+        <button onclick="loadArchiveFromGithub(true)">GitHub過去データ再読込</button>
+      </div>
+      <div class="row">
+        <span style="font-weight:700;">② グラフAPIを開く:</span>
+        <button class="primary" onclick="openGraphApi(1000)">T1,000（ドリーム級）</button>
+        <button class="primary" onclick="openGraphApi(5000)">T5,000（ダイヤ級）</button>
+        <button class="primary" onclick="openGraphApi(10000)">T10,000（プラチナ級）</button>
+        <button onclick="openGraphApi(100)">T100</button>
+        <button onclick="openGraphApi(500)">T500</button>
+        <button onclick="openGraphApi(50000)">T50,000</button>
+        <button class="ok" onclick="readClipboardNow(false)">📋 クリップボードから手動読込</button>
+      </div>
+      <div id="cachedRanksInfo" style="margin-top:8px;font-size:12px;color:var(--muted);"></div>
+      <details style="margin-top:10px;">
+        <summary style="cursor:pointer;font-size:12px;color:var(--muted);">スマホ等でクリップボード自動読取が使えない場合（JSON手動貼付）</summary>
+        <div style="margin-top:8px;">
+          <textarea id="manualJsonArea" style="font-family:monospace;font-size:12px;" placeholder='{"events":[...]} または {"tier":[[...]]}'></textarea>
+          <button class="primary" style="margin-top:6px;" onclick="submitManualJson()">JSONを反映</button>
+        </div>
+      </details>
+    </section>
+
+    <!-- Step 2: 配信レイアウト設定 -->
+    <section class="panel">
+      <h2>2. 配信画像レイアウト ＆ 任意お知らせテキスト設定</h2>
+      <div class="row">
+        <label style="font-weight:700;">画像レイアウト:</label>
+        <select id="modeSelect" onchange="onModeOrThemeChanged()">
+          <option value="triple" selected>トリプル（3枠横並び / 2160×760 ワイド）</option>
+          <option value="dual">デュアル（2枠比較 / 1600×900）</option>
+          <option value="single">シングル（1枠詳細 / 1600×900）</option>
+        </select>
+        <label style="font-weight:700;">テーマ色:</label>
+        <select id="themeSelect" onchange="onModeOrThemeChanged()">
+          <option value="auto" selected>順位連動（自動）</option>
+          <option value="rainbow">虹色</option>
+          <option value="purple">紫・輝く</option>
+          <option value="platinum">プラチナ</option>
+          <option value="gold">ゴールド</option>
+          <option value="silver">シルバー</option>
+          <option value="bronze">ブロンズ</option>
+        </select>
+      </div>
+      <div class="slot-editor" id="slotEditor"></div>
+
+      <div class="custom-msg-box">
+        <div class="row" style="justify-content:space-between;margin-bottom:8px;">
+          <label style="font-weight:700;">📢 任意テキスト（お知らせ・補足コメントなど / 空欄なら送信しません）:</label>
+          <div class="row">
+            <label style="font-size:12px;font-weight:700;">送信位置:</label>
+            <select id="customTextPosSelect" onchange="updateTextPreviews()">
+              <option value="below" selected>BorderPrediction（画像）の下に2通目として送信</option>
+              <option value="above">NowBorder（テキスト）の上に配置して送信</option>
+            </select>
+          </div>
+        </div>
+        <textarea
+          id="customTextInput"
+          placeholder="例：※本日は最終日のため、21時にも臨時更新を行います！"
+          oninput="updateTextPreviews()"
+        ></textarea>
+      </div>
+    </section>
+
+    <!-- Step 3: プレビュー確認 & Bot一斉通知 -->
+    <section class="panel">
+      <div class="row" style="justify-content:space-between;margin-bottom:12px;">
+        <h2 style="border:none;margin:0;padding:0;">3. 配信内容プレビュー ＆ Bot一斉通知</h2>
+        <button class="broadcast" id="broadcastBtn" onclick="triggerBroadcast()">🚀 Botに反映（登録チャンネルへ一斉通知）</button>
+      </div>
+      <div class="preview-grid">
+        <div>
+          <div style="font-size:12px;font-weight:700;margin-bottom:6px;color:var(--muted);">
+            ▼ BorderPrediction（添付画像プレビュー・この画像がそのまま送信されます）
+          </div>
+          <div class="preview-img-wrap">
+            <canvas id="reportCanvas" width="2160" height="760"></canvas>
+          </div>
+        </div>
+        <div>
+          <div style="font-size:12px;font-weight:700;margin-bottom:6px;color:var(--muted);">
+            ▼ 送信テキスト構成プレビュー
+          </div>
+          <div class="text-preview-box" id="messageFlowPreview">読込中...</div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const API_BASE = "https://api.holodori.best/api/events";
+    const GITHUB_ARCHIVE_BASE = "https://raw.githubusercontent.com/holodori-tools/event-borders/main/archive";
+    const DAYS_JP = ["日", "月", "火", "水", "木", "金", "土"];
+    const TIER_DEFS = [
+      { rank: 1000, label: "ドリーム級" },
+      { rank: 5000, label: "ダイヤ級" },
+      { rank: 10000, label: "プラチナ級" },
+    ];
+
+    let adminPassword = sessionStorage.getItem("admin_pw") || "";
+    let lastClipboardText = "";
+    let pendingHint = { key: null, rank: null };
+
+    const state = {
+      archiveItems: [],
+      events: [],
+      eligibleItems: [],
+      graphCache: new Map(), // `${key}::${rank}` -> graphData
+      selectedKey: null,
+      mode: "triple",
+      themeOverride: "auto",
+      single: { key: null, rank: 5000 },
+      dual: [
+        { key: null, rank: 1000 },
+        { key: null, rank: 5000 },
+      ],
+      triple: [
+        { key: null, rank: 1000 },
+        { key: null, rank: 5000 },
+        { key: null, rank: 10000 },
+      ],
+    };
+
+    function showToast(msg) {
+      const el = document.getElementById("toastBox");
+      el.textContent = msg;
+      el.classList.add("show");
+      clearTimeout(el._t);
+      el._t = setTimeout(() => el.classList.remove("show"), 6000);
+    }
+
+    function formatNumber(n) {
+      if (n == null || Number.isNaN(n)) return "-";
+      return Math.round(n).toLocaleString("ja-JP");
+    }
+
+    function formatJST(ms, withDate = true) {
+      const jst = new Date(ms + 9 * 3600 * 1000);
+      const m = String(jst.getUTCMonth() + 1).padStart(2, "0");
+      const day = String(jst.getUTCDate()).padStart(2, "0");
+      const wd = DAYS_JP[jst.getUTCDay()];
+      const hh = String(jst.getUTCHours()).padStart(2, "0");
+      const mm = String(jst.getUTCMinutes()).padStart(2, "0");
+      return withDate ? `${m}/${day}(${wd}) ${hh}:${mm}` : `${hh}:${mm}`;
+    }
+
+    function getEventCategory(ev) {
+      if (!ev || !ev.hasData) return null;
+      const name = ev.name || "";
+      if (ev.type === 2 || name.includes("スポットライト")) return "spotlight";
+      if ((ev.type === 1 && ev.isSongScore === false) || name.includes("ポイント")) return "point";
+      return null;
+    }
+
+    // =========================================================================
+    // 1. 認証 ＆ サーバー通信
+    // =========================================================================
+    async function apiFetch(url, options = {}) {
+      const headers = { ...(options.headers || {}), "x-admin-password": adminPassword };
+      if (options.body && typeof options.body === "object" && !(options.body instanceof FormData)) {
+        headers["Content-Type"] = "application/json";
+        options.body = JSON.stringify(options.body);
+      }
+      const res = await fetch(url, { ...options, headers });
+      if (res.status === 401) {
+        sessionStorage.removeItem("admin_pw");
+        document.getElementById("loginOverlay").style.display = "flex";
+        throw new Error("Unauthorized");
+      }
+      return res;
+    }
+
+    async function doLogin() {
+      const pw = document.getElementById("pwInput").value;
+      const res = await fetch("/api/admin/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: pw }),
+      });
+      if (res.ok) {
+        adminPassword = pw;
+        sessionStorage.setItem("admin_pw", pw);
+        document.getElementById("loginOverlay").style.display = "none";
+        await initializeApp();
+      } else {
+        document.getElementById("loginErr").textContent = "パスワードが違います。";
+      }
+    }
+
+    document.getElementById("pwInput").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") doLogin();
+    });
+
+    async function initializeApp() {
+      await Promise.all([loadArchiveFromGithub(false), loadServerBootstrap()]);
+      rebuildCombinedItems();
+      renderAllUI();
+    }
+
+    async function loadServerBootstrap() {
+      const res = await apiFetch("/api/admin/bootstrap");
+      const data = await res.json();
+      if (Array.isArray(data.events)) {
+        state.events = data.events;
+      }
+      if (data.graphs && typeof data.graphs === "object") {
+        for (const [k, g] of Object.entries(data.graphs)) {
+          if (g && Array.isArray(g.tier)) {
+            state.graphCache.set(k, g);
+          }
+        }
+      }
+      document.getElementById("statEvents").textContent = `イベント一覧キャッシュ: ${state.events.length}件`;
+      document.getElementById("statSubs").textContent = `通知購読チャンネル: ${data.subscriptionCount}ch`;
+    }
+
+    // =========================================================================
+    // 2. GitHub 過去完了データの直接読込
+    // =========================================================================
+    async function loadArchiveFromGithub(notify = false) {
+      const statEl = document.getElementById("statArchive");
+      statEl.textContent = "GitHub過去データ: 読込中...";
+      try {
+        const res = await fetch(`${GITHUB_ARCHIVE_BASE}/index.json?t=${Math.floor(Date.now() / 60000)}`, {
+          cache: "no-store",
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const manifest = await res.json();
+        const entries = Array.isArray(manifest) ? manifest : Array.isArray(manifest.items) ? manifest.items : [];
+
+        const newArchiveItems = [];
+        let loadedFiles = 0;
+
+        for (const ent of entries) {
+          const tierEntries = [];
+          for (const [k, val] of Object.entries(ent)) {
+            const m = /^t(\d+)$/i.exec(k);
+            if (m && typeof val === "string" && val.trim() !== "") {
+              tierEntries.push({ rankHint: Number(m[1]), file: val.trim() });
+            }
+          }
+          if (tierEntries.length === 0 && typeof ent.file === "string") {
+            tierEntries.push({ rankHint: ent.rank || 5000, file: ent.file.trim() });
+          }
+
+          const displayName = ent.tag || ent.name || ent.chapterId || ent.eventId || "archive";
+          const key = ent.eventId && ent.chapterId ? `${ent.eventId}::${ent.chapterId}` : `archive::${displayName}`;
+
+          const fetched = await Promise.all(
+            tierEntries.map(async (te) => {
+              try {
+                const gRes = await fetch(`${GITHUB_ARCHIVE_BASE}/${te.file}`);
+                if (!gRes.ok) return null;
+                const graph = await gRes.json();
+                if (!graph || !Array.isArray(graph.tier) || graph.tier.length === 0) return null;
+                return { actualRank: Number(graph.rank) || te.rankHint, graph };
+              } catch (_) {
+                return null;
+              }
+            })
+          );
+
+          let repGraph = null;
+          for (const item of fetched) {
+            if (!item) continue;
+            state.graphCache.set(`${key}::${item.actualRank}`, item.graph);
+            loadedFiles++;
+            if (!repGraph) repGraph = item.graph;
+          }
+
+          if (repGraph) {
+            const durH = (repGraph.endTime - repGraph.startTime) / 3600000;
+            const isFinished =
+              repGraph.tier[repGraph.tier.length - 1][0] >= repGraph.endTime - 15 * 60 * 1000;
+            const cat = ent.category || "spotlight";
+            const catLabel = cat === "point" ? "ポイントイベント" : "スポットライト";
+
+            newArchiveItems.push({
+              key,
+              eventId: ent.eventId || "archive",
+              chapterId: ent.chapterId || displayName,
+              category: cat,
+              catLabel,
+              label: `[過去] ${displayName} (${formatJST(repGraph.startTime, true)}〜, ${Math.round(durH)}h)`,
+              shortLabel: displayName,
+              startTime: repGraph.startTime,
+              endTime: repGraph.endTime,
+              durationH: durH,
+              live: !isFinished,
+              isArchive: true,
+            });
+          }
+        }
+
+        state.archiveItems = newArchiveItems;
+        statEl.textContent = `GitHub過去データ: ${newArchiveItems.length}イベント (${loadedFiles}件)`;
+        if (notify) {
+          rebuildCombinedItems();
+          renderAllUI();
+          showToast(`GitHubから過去データを再読込しました（${newArchiveItems.length}イベント）`);
+        }
+      } catch (err) {
+        statEl.textContent = "GitHub過去データ: 読込失敗";
+        console.error(err);
+      }
+    }
+
+    function rebuildCombinedItems() {
+      const now = Date.now();
+      const map = new Map();
+
+      for (const aItem of state.archiveItems) {
+        map.set(aItem.key, aItem);
+      }
+
+      for (const ev of state.events) {
+        const cat = getEventCategory(ev);
+        if (!cat) continue;
+        const chapters =
+          Array.isArray(ev.chapters) && ev.chapters.length > 0
+            ? ev.chapters
+            : Object.keys(ev.chapterMeta || {});
+
+        for (const cid of chapters) {
+          const cm = (ev.chapterMeta && ev.chapterMeta[cid]) || {};
+          const st = cm.startTime || ev.startTime;
+          const et = cm.endTime || ev.endTime;
+          if (!st || !et) continue;
+
+          const isChapterLive = Boolean(ev.live && (ev.activeChapterId === cid || (now >= st && now <= et)));
+          const isStarted = st <= now || !ev.live;
+          if (!isStarted && !isChapterLive) continue;
+
+          const key = `${ev.eventId}::${cid}`;
+          const existingArch = map.get(key);
+          const chName = cm.name ? ` / ${cm.name}` : existingArch ? ` / ${existingArch.shortLabel}` : "";
+          const shortName = cm.shortName || cm.name || (existingArch ? existingArch.shortLabel : ev.eventId);
+          const catLabel = cat === "spotlight" ? "スポットライト" : "ポイントイベント";
+          const durH = (et - st) / 3600000;
+
+          map.set(key, {
+            key,
+            eventId: ev.eventId,
+            chapterId: cid,
+            category: cat,
+            catLabel,
+            label: `${catLabel}${chName} (${formatJST(st, true)}〜, ${Math.round(durH)}h)${isChapterLive ? " [開催中]" : ""}`,
+            shortLabel: shortName,
+            startTime: st,
+            endTime: et,
+            durationH: durH,
+            live: isChapterLive,
+            isArchive: Boolean(existingArch),
+          });
+        }
+      }
+
+      const items = Array.from(map.values());
+      items.sort((a, b) => b.startTime - a.startTime);
+      state.eligibleItems = items;
+
+      if (!state.selectedKey || !items.some((x) => x.key === state.selectedKey)) {
+        const liveWithGraph = items.find(
+          (x) => x.live && Array.from(state.graphCache.keys()).some((k) => k.startsWith(`${x.key}::`))
+        );
+        const liveAny = items.find((x) => x.live);
+        state.selectedKey = (liveWithGraph || liveAny || items[0])?.key || null;
+      }
+
+      syncSlotsToSelectedIfUnset();
+    }
+
+    function syncSlotsToSelectedIfUnset() {
+      const def = state.selectedKey;
+      if (!def) return;
+      if (!state.single.key) state.single.key = def;
+      state.dual.forEach((s) => { if (!s.key) s.key = def; });
+      state.triple.forEach((s) => { if (!s.key) s.key = def; });
+    }
+
+    // =========================================================================
+    // 3. API開き ＆ クリップボード自動取込
+    // =========================================================================
+    function openListApi() {
+      pendingHint = { key: null, rank: null };
+      window.open(`${API_BASE}/list?region=jp&language=jpn`, "_blank");
+    }
+
+    function openGraphApi(rankVal) {
+      const evKey = document.getElementById("targetEventSelect").value;
+      const item = state.eligibleItems.find((x) => x.key === evKey);
+      const eid = item ? item.eventId : "marathon_event-relay-004";
+      const cid = item ? item.chapterId : "marathon_event-relay-004-chapter-03";
+      pendingHint = { key: evKey, rank: rankVal };
+      window.open(
+        `${API_BASE}/graph?region=jp&rank=${rankVal}&border=true&music=false&event_id=${encodeURIComponent(eid)}&chapter_id=${encodeURIComponent(cid)}`,
+        "_blank"
+      );
+    }
+
+    function detectRank(parsed) {
+      if (parsed && Number(parsed.rank) > 0) return Number(parsed.rank);
+      if (pendingHint && pendingHint.rank) return Number(pendingHint.rank);
+      return 5000;
+    }
+
+    async function ingestParsedJson(parsed) {
+      if (!parsed || typeof parsed !== "object") return false;
+
+      if (Array.isArray(parsed.events)) {
+        state.events = parsed.events;
+        rebuildCombinedItems();
+        renderAllUI();
+        document.getElementById("statEvents").textContent = `イベント一覧キャッシュ: ${parsed.events.length}件`;
+        showToast(`イベント一覧を取り込みキャッシュしました（${parsed.events.length}件）`);
+        apiFetch("/api/admin/cache-events", { method: "POST", body: { events: parsed.events } }).catch(() => {});
+        return true;
+      }
+
+      if (Array.isArray(parsed.tier) && parsed.startTime && parsed.endTime) {
+        const gRank = detectRank(parsed);
+        let matched = state.eligibleItems.find(
+          (it) => Math.abs(it.startTime - parsed.startTime) < 120000 && Math.abs(it.endTime - parsed.endTime) < 120000
+        );
+        if (!matched && pendingHint.key) {
+          matched = state.eligibleItems.find((it) => it.key === pendingHint.key);
+        }
+        if (!matched) {
+          const tempKey = `imported::${parsed.startTime}_${parsed.endTime}`;
+          matched = {
+            key: tempKey,
+            eventId: "imported",
+            chapterId: `${parsed.startTime}`,
+            category: "spotlight",
+            catLabel: "取込イベント",
+            label: `取込データ (${formatJST(parsed.startTime, true)}〜)`,
+            shortLabel: `イベント(${formatJST(parsed.startTime, true)})`,
+            startTime: parsed.startTime,
+            endTime: parsed.endTime,
+            durationH: (parsed.endTime - parsed.startTime) / 3600000,
+            live: parsed.tier[parsed.tier.length - 1][0] < parsed.endTime - 60000,
+          };
+          state.eligibleItems.unshift(matched);
+        }
+
+        const cacheKey = `${matched.key}::${gRank}`;
+        const graphObj = { ...parsed, rank: gRank };
+        state.graphCache.set(cacheKey, graphObj);
+        state.selectedKey = matched.key;
+        state.single.key = matched.key;
+        state.dual.forEach((s) => (s.key = matched.key));
+        state.triple.forEach((s) => (s.key = matched.key));
+
+        renderAllUI();
+        const latestVal = parsed.tier[parsed.tier.length - 1][1];
+        showToast(`「${matched.shortLabel}」(T${gRank.toLocaleString()}) を取り込みました（最新: ${formatNumber(latestVal)} pt）`);
+        apiFetch("/api/admin/cache-graph", { method: "POST", body: { cacheKey, graph: graphObj } }).catch(() => {});
+        return true;
+      }
+
+      return false;
+    }
+
+    async function readClipboardNow(silent = false) {
+      if (!navigator.clipboard || !navigator.clipboard.readText) return;
+      try {
+        const raw = (await navigator.clipboard.readText()).trim();
+        if (!raw || !raw.startsWith("{")) return;
+        if (silent && raw === lastClipboardText) return;
+        const parsed = JSON.parse(raw);
+        if (await ingestParsedJson(parsed)) {
+          lastClipboardText = raw;
+        }
+      } catch (_) {}
+    }
+
+    window.addEventListener("focus", () => {
+      if (adminPassword) readClipboardNow(true);
+    });
+
+    async function submitManualJson() {
+      const raw = document.getElementById("manualJsonArea").value.trim();
+      if (!raw) return;
+      try {
+        const parsed = JSON.parse(raw);
+        if (await ingestParsedJson(parsed)) {
+          lastClipboardText = raw;
+          document.getElementById("manualJsonArea").value = "";
+        } else {
+          alert("有効な events または tier データが含まれていません。");
+        }
+      } catch (e) {
+        alert("JSON構文エラー: " + e.message);
+      }
+    }
+
+    // =========================================================================
+    // 4. NowBorder テキスト自動生成（30分丸め ＋ 万単位四捨五入）
+    // =========================================================================
+    function formatRoundedJstTime(ms) {
+      const jst = new Date(ms + 9 * 3600 * 1000);
+      const hh = jst.getUTCHours();
+      const mm = jst.getUTCMinutes();
+      const totalMinutes = hh * 60 + mm;
+      const roundedTotalMinutes = Math.round(totalMinutes / 30) * 30;
+      const finalHour = Math.floor(roundedTotalMinutes / 60) % 24;
+      const finalMin = roundedTotalMinutes % 60;
+      return finalMin === 30 ? `${finalHour}時30分` : `${finalHour}時`;
+    }
+
+    function formatManRounded(score) {
+      if (score == null || Number.isNaN(score)) return "未取得";
+      return `${Math.round(score / 10000)}万`;
+    }
+
+    function buildNowBorderText() {
+      const targetKey = state.selectedKey;
+      let latestTimestamp = 0;
+      const lines = [];
+
+      for (const tier of TIER_DEFS) {
+        const graph = targetKey ? state.graphCache.get(`${targetKey}::${tier.rank}`) : null;
+        if (graph && Array.isArray(graph.tier) && graph.tier.length > 0) {
+          const [lastT, lastVal] = graph.tier[graph.tier.length - 1];
+          if (lastT > latestTimestamp) latestTimestamp = lastT;
+          lines.push(`${tier.label} ${formatManRounded(lastVal)}`);
+        } else {
+          lines.push(`${tier.label} 未取得`);
+        }
+      }
+
+      const baseTime = latestTimestamp > 0 ? latestTimestamp : Date.now();
+      return [`${formatRoundedJstTime(baseTime)}時点のボーダーです！`, ...lines].join("\n");
+    }
+
+    function updateTextPreviews() {
+      const nowBorderText = buildNowBorderText();
+      const customText = document.getElementById("customTextInput").value.trim();
+      const pos = document.getElementById("customTextPosSelect").value;
+
+      let preview = "";
+      if (customText && pos === "above") {
+        preview = `【1通目（テキスト＋画像）】\n${customText}\n\n${nowBorderText}\n\n[添付: BorderPrediction画像]`;
+      } else if (customText && pos === "below") {
+        preview = `【1通目（本体）】\n${nowBorderText}\n[添付: BorderPrediction画像]\n\n--------------------\n【2通目（画像の下に連続送信）】\n${customText}`;
+      } else {
+        preview = `【1通目】\n${nowBorderText}\n\n[添付: BorderPrediction画像]`;
+      }
+      document.getElementById("messageFlowPreview").textContent = preview;
+    }
+
+    // =========================================================================
+    // 5. 着地予測アルゴリズム（v5.html 完全移植）
+    // =========================================================================
+    function calcMedian(values) {
+      if (!values || values.length === 0) return 1.0;
+      const sorted = [...values].sort((a, b) => a - b);
+      const mid = sorted.length >> 1;
+      return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) * 0.5;
+    }
+
+    function interpScoreAtTime(graph, targetT) {
+      const st = graph.startTime;
+      const pts = graph.tier;
+      if (!pts || pts.length === 0) return null;
+      if (targetT <= st) return 0;
+      if (targetT <= pts[0][0]) {
+        return pts[0][1] * Math.max(0, (targetT - st) / Math.max(1, pts[0][0] - st));
+      }
+      if (targetT >= pts[pts.length - 1][0]) return pts[pts.length - 1][1];
+      let lo = 0, hi = pts.length - 1;
+      while (lo + 1 < hi) {
+        const mid = (lo + hi) >> 1;
+        if (pts[mid][0] <= targetT) lo = mid;
+        else hi = mid;
+      }
+      const [t0, v0] = pts[lo];
+      const [t1, v1] = pts[hi];
+      return v0 + (v1 - v0) * ((targetT - t0) / Math.max(1, t1 - t0));
+    }
+
+    function interpScoreAtProgress(graph, prog) {
+      return interpScoreAtTime(graph, graph.startTime + prog * (graph.endTime - graph.startTime));
+    }
+
+    function getJstHourActivityFactor(ms) {
+      const h = new Date(ms + 9 * 3600 * 1000).getUTCHours();
+      const table = [
+        0.55, 0.35, 0.22, 0.16, 0.15, 0.20,
+        0.35, 0.55, 0.65, 0.65, 0.70, 0.75,
+        0.85, 0.80, 0.80, 0.85, 0.90, 1.00,
+        1.10, 1.20, 1.35, 1.40, 1.25, 0.90,
+      ];
+      return table[h] || 1.0;
+    }
+
+    function computePrediction(targetItem, targetGraph, refPairs, targetRank) {
+      const st = targetGraph.startTime;
+      const et = targetGraph.endTime;
+      const dur = et - st;
+      const pts = targetGraph.tier;
+      const lastPt = pts[pts.length - 1];
+      const lastT = lastPt[0];
+      const currentScore = lastPt[1];
+      const elapsedMs = Math.max(60000, lastT - st);
+      const pCur = Math.min(1, elapsedMs / dur);
+      const isFinished = pCur >= 0.998 && !targetItem.live;
+
+      const recentWindowMs = Math.min(3600 * 1000, Math.max(15 * 60 * 1000, elapsedMs * 0.12));
+      const sRecentPrev = interpScoreAtTime(targetGraph, Math.max(st, lastT - recentWindowMs));
+      const recentPace = ((currentScore - sRecentPrev) / recentWindowMs) * 3600000;
+
+      const midWindowMs = Math.max(recentWindowMs * 1.5, elapsedMs * 0.28);
+      const sMidPrev = interpScoreAtTime(targetGraph, Math.max(st, lastT - midWindowMs));
+      const midPace = ((currentScore - sMidPrev) / midWindowMs) * 3600000;
+
+      const naiveLinear = pCur > 0.02 ? currentScore / pCur : currentScore;
+
+      const validRefs = refPairs
+        .filter(({ graph }) => {
+          if (!graph || !Array.isArray(graph.tier) || graph.tier.length < 20) return false;
+          if (graph.rank && Number(graph.rank) !== Number(targetRank)) return false;
+          const gDur = graph.endTime - graph.startTime;
+          const gProg = (graph.tier[graph.tier.length - 1][0] - graph.startTime) / Math.max(1, gDur);
+          return gProg >= 0.98;
+        })
+        .sort((a, b) => b.graph.endTime - a.graph.endTime);
+
+      let monthlyGrowthRate = 0.010;
+      if (validRefs.length >= 3) {
+        const refPts = validRefs.map((r) => {
+          const rDurH = (r.graph.endTime - r.graph.startTime) / 3600000;
+          const rFinal = r.graph.tier[r.graph.tier.length - 1][1];
+          return {
+            tMonths: (r.graph.startTime - st) / (30 * 24 * 3600 * 1000),
+            val: rFinal / Math.max(1, rDurH),
+          };
+        });
+        const meanT = refPts.reduce((a, b) => a + b.tMonths, 0) / refPts.length;
+        const meanV = refPts.reduce((a, b) => a + b.val, 0) / refPts.length;
+        let num = 0, den = 0;
+        for (const p of refPts) {
+          num += (p.tMonths - meanT) * (p.val - meanV);
+          den += Math.pow(p.tMonths - meanT, 2);
+        }
+        if (den > 0.05 && meanV > 0) {
+          monthlyGrowthRate = Math.max(0.0, Math.min(0.015, num / den / meanV));
+        }
+      }
+
+      const eraAdjustedRefs = validRefs.map((r) => {
+        const monthsAgo = (st - r.graph.startTime) / (30 * 24 * 3600 * 1000);
+        const eraScale = Math.max(0.92, Math.min(1.08, 1.0 + monthlyGrowthRate * monthsAgo));
+        return {
+          ...r,
+          monthsAgo,
+          eraScale,
+          adjFinal: r.graph.tier[r.graph.tier.length - 1][1] * eraScale,
+        };
+      });
+
+      let resourceFactor = 1.0;
+      if (Array.isArray(state.events) && state.events.length > 0) {
+        const priorEvents = state.events
+          .filter((ev) => ev.endTime && ev.endTime <= st + 3600000 && ev.eventId !== targetItem.eventId)
+          .sort((a, b) => b.endTime - a.endTime);
+
+        if (priorEvents.length > 0) {
+          const prevEv = priorEvents[0];
+          const prevName = prevEv.name || "";
+          if (prevEv.isSongScore === true || prevName.includes("スコア")) {
+            resourceFactor *= 1.03;
+          }
+        }
+      }
+
+      if (eraAdjustedRefs.length >= 3) {
+        const medAdjFinal = calcMedian(eraAdjustedRefs.map((r) => r.adjFinal));
+        const prevSameCat = eraAdjustedRefs.find(
+          (r) => r.graph.endTime <= st + 3600000 && st - r.graph.endTime < 7 * 24 * 3600 * 1000
+        );
+        if (prevSameCat && medAdjFinal > 0) {
+          const prevHeatRatio = prevSameCat.adjFinal / medAdjFinal;
+          const rebound = Math.max(0.88, Math.min(1.04, 1.0 - (prevHeatRatio - 1.0) * 0.12));
+          resourceFactor *= rebound;
+        }
+      }
+
+      const wPaceWeight = Math.min(0.80, Math.max(0.25, Math.pow(pCur, 1.15)));
+      const wLevelWeight = 1.0 - wPaceWeight;
+
+      const targetEndHour = new Date(et + 9 * 3600 * 1000).getUTCHours();
+      const targetStartDay = new Date(st + 9 * 3600 * 1000).getUTCDay();
+
+      const curActivity = getJstHourActivityFactor(lastT);
+      const normalizedCurPace = (0.68 * recentPace + 0.32 * midPace) / Math.max(0.2, curActivity);
+
+      const rNows = [];
+      const rPaces = [];
+      const refCalcs = [];
+
+      for (const rObj of eraAdjustedRefs) {
+        const { item, graph, monthsAgo, eraScale } = rObj;
+        const gDur = graph.endTime - graph.startTime;
+        const rawHCur = interpScoreAtProgress(graph, pCur);
+        const rawHFinal = graph.tier[graph.tier.length - 1][1];
+        if (!rawHCur || rawHCur <= 0 || rawHFinal <= rawHCur) continue;
+
+        const hCur = rawHCur * eraScale;
+        const hFinal = rawHFinal * eraScale;
+        const rNow = currentScore / hCur;
+
+        const hTargetT = graph.startTime + pCur * gDur;
+        const hRecentPrev = interpScoreAtTime(graph, Math.max(graph.startTime, hTargetT - recentWindowMs)) * eraScale;
+        const hRecentPace = ((hCur - hRecentPrev) / recentWindowMs) * 3600000;
+        const hActivity = getJstHourActivityFactor(hTargetT);
+        const hNormPace = hRecentPace / Math.max(0.2, hActivity);
+        const rPace = hNormPace > 0 ? normalizedCurPace / hNormPace : rNow;
+
+        rNows.push(rNow);
+        rPaces.push(rPace);
+        refCalcs.push({ item, graph, monthsAgo, eraScale, rawHCur, rawHFinal, hCur, hFinal, rNow, rPace });
+      }
+
+      const medRNow = calcMedian(rNows);
+      const medRPace = calcMedian(rPaces);
+      const liveHeat = wLevelWeight * medRNow + wPaceWeight * medRPace;
+      const momentumRatio = medRPace / Math.max(0.3, medRNow);
+
+      const alpha = Number(targetRank) <= 1000 ? 0.34 : 0.05;
+      const betaMom = 0.05;
+      const clampedHeat = Math.max(0.60, Math.min(2.30, liveHeat));
+      const clampedMom = Math.max(0.75, Math.min(1.35, momentumRatio));
+      const remDamp = Math.pow(Math.max(0, 1.0 - pCur), 0.75);
+      const tierElasticity = Math.pow(clampedHeat, alpha * remDamp) * Math.pow(clampedMom, betaMom * remDamp);
+
+      const refModels = [];
+      for (const rc of refCalcs) {
+        const { item, graph, monthsAgo, eraScale, rawHCur, rawHFinal, hCur, hFinal, rNow, rPace } = rc;
+        const remainingDamp = 1.0 - pCur * 0.45;
+        const totalExternalAdj = 1.0 + (resourceFactor - 1.0) * remainingDamp;
+        const baseMultiplier = wLevelWeight * rNow + wPaceWeight * rPace;
+        const multiplier = baseMultiplier * tierElasticity * totalExternalAdj;
+        const impliedFinal = isFinished ? currentScore : currentScore + (hFinal - hCur) * multiplier;
+
+        const recencyWeight = Math.exp(-Math.abs(monthsAgo) / 6.0);
+        let simWeight = 1.0;
+        const refEndHour = new Date(graph.endTime + 9 * 3600 * 1000).getUTCHours();
+        const refStartDay = new Date(graph.startTime + 9 * 3600 * 1000).getUTCDay();
+        if (Math.abs(item.durationH - targetItem.durationH) < 2) simWeight += 0.7;
+        if (refEndHour === targetEndHour) simWeight += 0.7;
+        if (refStartDay === targetStartDay) simWeight += 1.2;
+        if (item.eventId && item.eventId === targetItem.eventId) simWeight += 0.8;
+
+        const rawScaleSim = Math.min(rNow, 1 / Math.max(1e-4, rNow));
+        const scaleSim = Math.pow(rawScaleSim, 1.25);
+        const weight = simWeight * recencyWeight * (0.20 + 0.80 * scaleSim);
+
+        refModels.push({
+          item,
+          graph,
+          eraScale,
+          hCur: rawHCur,
+          hFinal: rawHFinal,
+          adjHCur: hCur,
+          adjHFinal: hFinal,
+          multiplier,
+          impliedFinal,
+          weight,
+        });
+      }
+
+      refModels.sort((a, b) => b.weight - a.weight);
+
+      const gridSteps = 96;
+      const forecastSeries = [];
+      let centralFinal = currentScore;
+      let minFinal = currentScore;
+      let maxFinal = currentScore;
+
+      if (!isFinished && refModels.length > 0) {
+        const totalW = refModels.reduce((acc, m) => acc + m.weight, 0);
+        centralFinal = refModels.reduce((acc, m) => acc + m.impliedFinal * m.weight, 0) / totalW;
+
+        const variance =
+          refModels.reduce((acc, m) => acc + m.weight * Math.pow(m.impliedFinal - centralFinal, 2), 0) / totalW;
+        const stdDev = Math.sqrt(variance);
+        const spreadMargin = Math.max(stdDev * 1.10, (centralFinal - currentScore) * 0.07);
+
+        minFinal = Math.max(currentScore, centralFinal - spreadMargin);
+        maxFinal = centralFinal + spreadMargin;
+
+        for (let i = 0; i <= gridSteps; i++) {
+          const p = pCur + ((1 - pCur) * i) / gridSteps;
+          if (i === 0) {
+            forecastSeries.push({ p, elapsedH: (p * dur) / 3600000, central: currentScore, min: currentScore, max: currentScore });
+            continue;
+          }
+          let wSum = 0;
+          for (const m of refModels) {
+            const adjHAtP = interpScoreAtProgress(m.graph, p) * m.eraScale;
+            const predAtP = currentScore + (adjHAtP - m.adjHCur) * m.multiplier;
+            wSum += predAtP * m.weight;
+          }
+          const cVal = wSum / totalW;
+          const stepRatio = (p - pCur) / Math.max(1e-4, 1 - pCur);
+          const curMargin = spreadMargin * Math.pow(stepRatio, 0.85);
+          forecastSeries.push({
+            p,
+            elapsedH: (p * dur) / 3600000,
+            central: cVal,
+            min: Math.max(currentScore, cVal - curMargin),
+            max: cVal + curMargin,
+          });
+        }
+      } else if (!isFinished) {
+        const remHours = Math.max(0, (et - lastT) / 3600000);
+        const paceBased = currentScore + normalizedCurPace * remHours * 1.15;
+        centralFinal = Math.max(naiveLinear * 1.12, paceBased);
+        minFinal = centralFinal * 0.92;
+        maxFinal = centralFinal * 1.10;
+        forecastSeries.push({ p: pCur, elapsedH: (pCur * dur) / 3600000, central: currentScore, min: currentScore, max: currentScore });
+        forecastSeries.push({ p: 1, elapsedH: dur / 3600000, central: centralFinal, min: minFinal, max: maxFinal });
+      }
+
+      const halfSpread = isFinished ? 0 : Math.max(centralFinal - minFinal, maxFinal - centralFinal);
+
+      return {
+        targetItem,
+        targetGraph,
+        rank: targetRank,
+        currentScore,
+        lastT,
+        elapsedH: elapsedMs / 3600000,
+        totalH: dur / 3600000,
+        pCur,
+        isFinished,
+        recentPace,
+        naiveLinear,
+        centralFinal,
+        minFinal,
+        maxFinal,
+        halfSpread,
+        forecastSeries,
+        refModels,
+      };
+    }
+
+    function getPredictionFor(eventKey, targetRank) {
+      const targetItem = state.eligibleItems.find((x) => x.key === eventKey);
+      if (!targetItem) return null;
+      const targetGraph = state.graphCache.get(`${targetItem.key}::${targetRank}`);
+      if (!targetGraph) return null;
+
+      const refPairs = [];
+      for (const cand of state.eligibleItems) {
+        if (cand.key === targetItem.key || cand.live) continue;
+        if (cand.category !== targetItem.category) continue;
+        const g = state.graphCache.get(`${cand.key}::${targetRank}`);
+        if (g) refPairs.push({ item: cand, graph: g });
+      }
+
+      return computePrediction(targetItem, targetGraph, refPairs, targetRank);
+    }
+
+    // =========================================================================
+    // 6. 高解像度 Canvas 描画（トリプル: 2160×760 / デュアル・シングル: 1600×900）
+    // =========================================================================
+    function getTierRankTitle(rank) {
+      const r = Number(rank);
+      if (r === 1000) return "ドリーム級";
+      if (r === 5000) return "ダイヤ級";
+      if (r === 10000) return "プラチナ級";
+      return null;
+    }
+
+    function getTierTheme(rank) {
+      let key = state.themeOverride || "auto";
+      if (key === "auto") {
+        if (rank <= 1000) key = "rainbow";
+        else if (rank <= 5000) key = "purple";
+        else if (rank <= 10000) key = "platinum";
+        else if (rank <= 50000) key = "gold";
+        else if (rank <= 100000) key = "silver";
+        else key = "bronze";
+      }
+
+      const themes = {
+        rainbow: {
+          bgStops: ["#0c0a1d", "#181236", "#0b192c"],
+          borderStops: ["#ff4d6d", "#ffb703", "#06d6a0", "#3a86ff", "#c77dff", "#ff4d6d"],
+          primary: "#ffffff",
+          accent: "#38bdf8",
+          forecast: "#ffbe0b",
+          bandFill: "rgba(255, 190, 11, 0.22)",
+          glowColor: "rgba(168, 85, 247, 0.75)",
+          sparkle: true,
+          rainbow: true,
+        },
+        purple: {
+          bgStops: ["#120724", "#240e47", "#140829"],
+          borderStops: ["#a855f7", "#f0abfc", "#7e22ce", "#e879f9"],
+          primary: "#f3e8ff",
+          accent: "#d8b4fe",
+          forecast: "#f0abfc",
+          bandFill: "rgba(216, 180, 254, 0.22)",
+          glowColor: "rgba(217, 70, 239, 0.85)",
+          sparkle: true,
+          rainbow: false,
+        },
+        platinum: {
+          bgStops: ["#101822", "#1e2c3d", "#131c28"],
+          borderStops: ["#e0f2fe", "#7dd3fc", "#f8fafc", "#38bdf8"],
+          primary: "#f0f9ff",
+          accent: "#7dd3fc",
+          forecast: "#bae6fd",
+          bandFill: "rgba(125, 211, 252, 0.20)",
+          glowColor: "rgba(125, 211, 252, 0.55)",
+          sparkle: false,
+          rainbow: false,
+        },
+        gold: {
+          bgStops: ["#1c1507", "#33260c", "#1a1306"],
+          borderStops: ["#fde047", "#f59e0b", "#fef08a", "#d97706"],
+          primary: "#fef9c3",
+          accent: "#fde047",
+          forecast: "#fbbf24",
+          bandFill: "rgba(251, 191, 36, 0.20)",
+          glowColor: "rgba(245, 158, 11, 0.50)",
+          sparkle: false,
+          rainbow: false,
+        },
+        silver: {
+          bgStops: ["#14171c", "#262b34", "#161920"],
+          borderStops: ["#e2e8f0", "#94a3b8", "#f1f5f9", "#64748b"],
+          primary: "#f1f5f9",
+          accent: "#cbd5e1",
+          forecast: "#e2e8f0",
+          bandFill: "rgba(203, 213, 225, 0.18)",
+          glowColor: "rgba(148, 163, 184, 0.35)",
+          sparkle: false,
+          rainbow: false,
+        },
+        bronze: {
+          bgStops: ["#1a100b", "#2e1c13", "#180e0a"],
+          borderStops: ["#fdba74", "#c2410c", "#fed7aa", "#9a3412"],
+          primary: "#ffedd5",
+          accent: "#fdba74",
+          forecast: "#fb923c",
+          bandFill: "rgba(251, 146, 60, 0.18)",
+          glowColor: "rgba(194, 65, 12, 0.35)",
+          sparkle: false,
+          rainbow: false,
+        },
+      };
+      return themes[key] || themes.silver;
+    }
+
+    function drawRoundRect(ctx, x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    }
+
+    function drawFittedText(ctx, text, x, y, maxWidth) {
+      let str = String(text || "");
+      if (ctx.measureText(str).width <= maxWidth) {
+        ctx.fillText(str, x, y);
+        return;
+      }
+      while (str.length > 1 && ctx.measureText(str + "…").width > maxWidth) {
+        str = str.slice(0, -1);
+      }
+      ctx.fillText(str + "…", x, y);
+    }
+
+    function renderActiveCanvas() {
+      const canvas = document.getElementById("reportCanvas");
+      if (state.mode === "single") {
+        canvas.width = 1600;
+        canvas.height = 900;
+        const pred = getPredictionFor(state.single.key, state.single.rank);
+        drawSingleCard(canvas, pred);
+      } else if (state.mode === "dual") {
+        canvas.width = 1600;
+        canvas.height = 900;
+        drawMultiCards(canvas, state.dual);
+      } else {
+        // トリプル（デフォルト）: 横長ワイド比率 2160 × 760
+        canvas.width = 2160;
+        canvas.height = 760;
+        drawMultiCards(canvas, state.triple);
+      }
+    }
+
+    function drawSingleCard(canvas, pred) {
+      const ctx = canvas.getContext("2d");
+      const W = canvas.width;
+      const H = canvas.height;
+      ctx.clearRect(0, 0, W, H);
+
+      if (!pred) {
+        ctx.fillStyle = "#0f172a";
+        ctx.fillRect(0, 0, W, H);
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "700 30px sans-serif";
+        ctx.fillText("対象イベントのグラフデータが未取得です。上のボタンからAPIデータをコピーしてください。", 64, 120);
+        return;
+      }
+
+      const theme = getTierTheme(pred.rank);
+      const rankTitle = getTierRankTitle(pred.rank);
+
+      const bgGrad = ctx.createLinearGradient(0, 0, W, H);
+      bgGrad.addColorStop(0, theme.bgStops[0]);
+      bgGrad.addColorStop(0.5, theme.bgStops[1]);
+      bgGrad.addColorStop(1, theme.bgStops[2]);
+      ctx.fillStyle = bgGrad;
+      ctx.fillRect(0, 0, W, H);
+
+      const radial = ctx.createRadialGradient(W * 0.78, H * 0.22, 30, W * 0.78, H * 0.22, 620);
+      radial.addColorStop(0, theme.glowColor);
+      radial.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = radial;
+      ctx.fillRect(0, 0, W, H);
+
+      if (theme.rainbow) {
+        const rbAura = ctx.createLinearGradient(0, 0, W, H);
+        rbAura.addColorStop(0, "rgba(255, 77, 109, 0.14)");
+        rbAura.addColorStop(0.25, "rgba(255, 183, 3, 0.12)");
+        rbAura.addColorStop(0.5, "rgba(6, 214, 160, 0.12)");
+        rbAura.addColorStop(0.75, "rgba(58, 134, 255, 0.14)");
+        rbAura.addColorStop(1, "rgba(199, 125, 255, 0.16)");
+        ctx.fillStyle = rbAura;
+        ctx.fillRect(0, 0, W, H);
+      }
+
+      if (theme.sparkle) {
+        const stars = [
+          [120, 126, 4.0], [320, 82, 2.6], [1440, 118, 4.8], [1490, 280, 3.2],
+          [1300, 186, 3.6], [1010, 100, 2.8], [1370, 745, 3.8], [186, 785, 3.2],
+          [826, 146, 2.4], [1170, 810, 2.8], [1520, 640, 3.6], [610, 76, 3.0],
+        ];
+        for (const [sx, sy, sr] of stars) {
+          ctx.save();
+          ctx.fillStyle = "#ffffff";
+          ctx.shadowColor = theme.forecast;
+          ctx.shadowBlur = 18;
+          ctx.beginPath();
+          ctx.arc(sx, sy, sr, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        }
+      }
+
+      const borderGrad = ctx.createLinearGradient(0, 0, W, H);
+      theme.borderStops.forEach((c, idx) => {
+        borderGrad.addColorStop(idx / Math.max(1, theme.borderStops.length - 1), c);
+      });
+      ctx.save();
+      drawRoundRect(ctx, 22, 22, W - 44, H - 44, 24);
+      ctx.lineWidth = 6;
+      ctx.strokeStyle = borderGrad;
+      if (theme.sparkle) {
+        ctx.shadowColor = theme.glowColor;
+        ctx.shadowBlur = 28;
+      }
+      ctx.stroke();
+      ctx.restore();
+
+      ctx.fillStyle = "rgba(255, 255, 255, 0.68)";
+      ctx.font = "600 23px sans-serif";
+      ctx.fillText(
+        `${pred.targetItem.catLabel}  ｜  開催: ${formatJST(pred.targetItem.startTime)} 〜 ${formatJST(pred.targetItem.endTime)}`,
+        64,
+        88
+      );
+
+      const rankBadgeW = rankTitle ? 360 : 310;
+      const rankBadgeH = 70;
+      const rankBadgeX = W - 64 - rankBadgeW;
+      const rankBadgeY = 64;
+
+      ctx.save();
+      ctx.font = "800 46px sans-serif";
+      ctx.fillStyle = theme.primary;
+      if (theme.sparkle) {
+        ctx.shadowColor = theme.glowColor;
+        ctx.shadowBlur = 20;
+      }
+      drawFittedText(ctx, pred.targetItem.shortLabel, 64, 148, W - 150 - rankBadgeW);
+      ctx.restore();
+
+      ctx.save();
+      drawRoundRect(ctx, rankBadgeX, rankBadgeY, rankBadgeW, rankBadgeH, 14);
+      ctx.fillStyle = "rgba(255, 255, 255, 0.10)";
+      ctx.fill();
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = borderGrad;
+      ctx.stroke();
+      ctx.fillStyle = theme.primary;
+      ctx.font = "800 32px sans-serif";
+      ctx.textAlign = "center";
+      const badgeTxt = rankTitle ? `${rankTitle} / T${pred.rank.toLocaleString()}` : `T${pred.rank.toLocaleString()} ボーダー`;
+      ctx.fillText(badgeTxt, rankBadgeX + rankBadgeW / 2, rankBadgeY + 46);
+      ctx.restore();
+
+      const leftX = 64;
+      const leftY = 188;
+      const leftW = 572;
+      const leftH = 630;
+      ctx.save();
+      drawRoundRect(ctx, leftX, leftY, leftW, leftH, 18);
+      ctx.fillStyle = "rgba(0, 0, 0, 0.36)";
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.16)";
+      ctx.stroke();
+      ctx.restore();
+
+      ctx.fillStyle = "rgba(255, 255, 255, 0.72)";
+      ctx.font = "700 22px sans-serif";
+      ctx.fillText(pred.isFinished ? "最終確定ボーダー" : "最終着地予測ボーダー（本命）", leftX + 34, leftY + 54);
+
+      ctx.save();
+      ctx.font = "800 60px monospace";
+      if (theme.rainbow) {
+        const txtGrad = ctx.createLinearGradient(leftX + 34, 0, leftX + 520, 0);
+        txtGrad.addColorStop(0, "#ff758f");
+        txtGrad.addColorStop(0.35, "#ffd166");
+        txtGrad.addColorStop(0.7, "#06d6a0");
+        txtGrad.addColorStop(1, "#60a5fa");
+        ctx.fillStyle = txtGrad;
+      } else {
+        ctx.fillStyle = theme.forecast;
+      }
+      if (theme.sparkle) {
+        ctx.shadowColor = theme.glowColor;
+        ctx.shadowBlur = 22;
+      }
+      ctx.fillText(`${formatNumber(pred.centralFinal)} pt`, leftX + 34, leftY + 130);
+      ctx.restore();
+
+      if (!pred.isFinished) {
+        ctx.fillStyle = theme.accent;
+        ctx.font = "700 28px monospace";
+        ctx.fillText(`誤差目安: ±${formatNumber(pred.halfSpread)} pt`, leftX + 34, leftY + 180);
+
+        ctx.fillStyle = "rgba(255, 255, 255, 0.78)";
+        ctx.font = "600 21px monospace";
+        ctx.fillText(`レンジ: ${formatNumber(pred.minFinal)} 〜 ${formatNumber(pred.maxFinal)}`, leftX + 34, leftY + 220);
+      } else {
+        ctx.fillStyle = theme.accent;
+        ctx.font = "700 26px sans-serif";
+        ctx.fillText("イベント終了・確定値", leftX + 34, leftY + 184);
+      }
+
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.14)";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(leftX + 32, leftY + 252);
+      ctx.lineTo(leftX + leftW - 32, leftY + 252);
+      ctx.stroke();
+
+      const subRows = [
+        ["現在スコア", `${formatNumber(pred.currentScore)} pt`],
+        ["経過 / 進捗", `${pred.elapsedH.toFixed(1)}h / ${pred.totalH.toFixed(0)}h (${(pred.pCur * 100).toFixed(1)}%)`],
+        ["直近平均時速", `${formatNumber(pred.recentPace)} pt/h`],
+        ["残り予測増分", pred.isFinished ? "0 pt" : `+${formatNumber(Math.max(0, pred.centralFinal - pred.currentScore))} pt`],
+        ["基準データ時刻", formatJST(pred.lastT)],
+      ];
+
+      subRows.forEach(([k, v], idx) => {
+        const ry = leftY + 308 + idx * 62;
+        ctx.fillStyle = "rgba(255, 255, 255, 0.62)";
+        ctx.font = "600 21px sans-serif";
+        ctx.fillText(k, leftX + 34, ry);
+
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "700 22px monospace";
+        ctx.textAlign = "right";
+        ctx.fillText(v, leftX + leftW - 34, ry);
+        ctx.textAlign = "left";
+      });
+
+      const rightX = 668;
+      const rightY = 188;
+      const rightW = W - rightX - 64;
+      const rightH = 630;
+
+      ctx.save();
+      drawRoundRect(ctx, rightX, rightY, rightW, rightH, 18);
+      ctx.fillStyle = "rgba(0, 0, 0, 0.36)";
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.16)";
+      ctx.stroke();
+      ctx.restore();
+
+      const gPadL = 102, gPadR = 34, gPadT = 64, gPadB = 60;
+      const plotX = rightX + gPadL;
+      const plotY = rightY + gPadT;
+      const plotW = rightW - gPadL - gPadR;
+      const plotH = rightH - gPadT - gPadB;
+
+      ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
+      ctx.font = "700 20px sans-serif";
+      ctx.fillText("推移実績 & 着地予測レンジ", rightX + 32, rightY + 40);
+
+      let maxY = Math.max(pred.maxFinal, pred.currentScore);
+      for (const m of pred.refModels.slice(0, 3)) maxY = Math.max(maxY, m.hFinal);
+      maxY = Math.ceil((maxY * 1.06) / 100000) * 100000 || 500000;
+
+      const xOf = (p) => plotX + Math.max(0, Math.min(1, p)) * plotW;
+      const yOf = (v) => plotY + plotH - (Math.max(0, v) / maxY) * plotH;
+
+      ctx.font = "600 17px monospace";
+      ctx.textAlign = "right";
+      for (let i = 0; i <= 5; i++) {
+        const val = (maxY * i) / 5;
+        const gy = yOf(val);
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.10)";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(plotX, gy);
+        ctx.lineTo(plotX + plotW, gy);
+        ctx.stroke();
+
+        ctx.fillStyle = "rgba(255, 255, 255, 0.65)";
+        const lbl = val >= 10000 ? `${(val / 10000).toFixed(0)}万` : formatNumber(val);
+        ctx.fillText(lbl, plotX - 14, gy + 6);
+      }
+
+      ctx.textAlign = "center";
+      const stepH = pred.totalH <= 48 ? 6 : 24;
+      for (let h = 0; h <= pred.totalH; h += stepH) {
+        const gx = xOf(h / pred.totalH);
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.07)";
+        ctx.beginPath();
+        ctx.moveTo(gx, plotY);
+        ctx.lineTo(gx, plotY + plotH);
+        ctx.stroke();
+
+        ctx.fillStyle = "rgba(255, 255, 255, 0.65)";
+        ctx.fillText(`${h}h`, gx, plotY + plotH + 28);
+      }
+      ctx.textAlign = "left";
+
+      pred.refModels.slice(0, 2).forEach((m) => {
+        const g = m.graph;
+        const dur = g.endTime - g.startTime;
+        ctx.save();
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.22)";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        const step = Math.max(1, Math.floor(g.tier.length / 150));
+        for (let i = 0; i < g.tier.length; i += step) {
+          const [t, v] = g.tier[i];
+          const px = xOf((t - g.startTime) / dur);
+          const py = yOf(v);
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        }
+        ctx.stroke();
+        ctx.restore();
+      });
+
+      if (!pred.isFinished && pred.forecastSeries.length > 1) {
+        ctx.save();
+        ctx.fillStyle = theme.bandFill;
+        ctx.beginPath();
+        pred.forecastSeries.forEach((pt, i) => {
+          const px = xOf(pt.p);
+          const py = yOf(pt.max);
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        });
+        for (let i = pred.forecastSeries.length - 1; i >= 0; i--) {
+          const pt = pred.forecastSeries[i];
+          ctx.lineTo(xOf(pt.p), yOf(pt.min));
+        }
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.setLineDash([10, 8]);
+        ctx.lineWidth = 4.2;
+        ctx.strokeStyle = theme.forecast;
+        if (theme.sparkle) {
+          ctx.shadowColor = theme.glowColor;
+          ctx.shadowBlur = 14;
+        }
+        ctx.beginPath();
+        pred.forecastSeries.forEach((pt, i) => {
+          const px = xOf(pt.p);
+          const py = yOf(pt.central);
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        });
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      const tPts = pred.targetGraph.tier;
+      const tDur = pred.targetGraph.endTime - pred.targetGraph.startTime;
+      ctx.save();
+      if (theme.rainbow) {
+        const lineGrad = ctx.createLinearGradient(plotX, 0, plotX + plotW, 0);
+        lineGrad.addColorStop(0, "#ff4d6d");
+        lineGrad.addColorStop(0.3, "#ffb703");
+        lineGrad.addColorStop(0.6, "#06d6a0");
+        lineGrad.addColorStop(1, "#3a86ff");
+        ctx.strokeStyle = lineGrad;
+      } else {
+        ctx.strokeStyle = theme.accent;
+      }
+      ctx.lineWidth = 5;
+      if (theme.sparkle) {
+        ctx.shadowColor = theme.glowColor;
+        ctx.shadowBlur = 16;
+      }
+      ctx.beginPath();
+      const step = Math.max(1, Math.floor(tPts.length / 220));
+      for (let i = 0; i < tPts.length; i += step) {
+        const [t, v] = tPts[i];
+        const px = xOf((t - pred.targetGraph.startTime) / tDur);
+        const py = yOf(v);
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      const [lt, lv] = tPts[tPts.length - 1];
+      const lx = xOf((lt - pred.targetGraph.startTime) / tDur);
+      const ly = yOf(lv);
+      ctx.lineTo(lx, ly);
+      ctx.stroke();
+
+      ctx.fillStyle = "#ffffff";
+      ctx.beginPath();
+      ctx.arc(lx, ly, 7.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+
+      const endY = yOf(pred.centralFinal);
+      ctx.save();
+      ctx.fillStyle = theme.forecast;
+      ctx.beginPath();
+      ctx.arc(xOf(1), endY, 7.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+
+      ctx.fillStyle = "rgba(255, 255, 255, 0.48)";
+      ctx.font = "600 17px monospace";
+      ctx.textAlign = "right";
+      ctx.fillText(`Generated at ${formatJST(Date.now())} JST`, W - 64, H - 38);
+      ctx.textAlign = "left";
+    }
+
+    function drawMultiCards(canvas, slots) {
+      const ctx = canvas.getContext("2d");
+      const W = canvas.width;
+      const H = canvas.height;
+      const isTriple = slots.length >= 3;
+      ctx.clearRect(0, 0, W, H);
+
+      const baseBg = ctx.createLinearGradient(0, 0, W, H);
+      baseBg.addColorStop(0, "#090c15");
+      baseBg.addColorStop(0.5, "#111626");
+      baseBg.addColorStop(1, "#090c15");
+      ctx.fillStyle = baseBg;
+      ctx.fillRect(0, 0, W, H);
+
+      const marginX = 32;
+      const gapX = 24;
+      const headerY = 42;
+      const cardY = 60;
+      const cardH = H - cardY - 26;
+      const cardW = (W - marginX * 2 - gapX * (slots.length - 1)) / slots.length;
+
+      ctx.fillStyle = "rgba(255, 255, 255, 0.76)";
+      ctx.font = "700 18px sans-serif";
+      ctx.fillText(
+        isTriple
+          ? "BORDER FORECAST OVERVIEW  ｜  イベントボーダー着地予測（ドリーム級 / ダイヤ級 / プラチナ級）"
+          : "BORDER FORECAST COMPARISON  ｜  イベントボーダー着地予測・推移比較",
+        marginX,
+        headerY
+      );
+
+      ctx.fillStyle = "rgba(255, 255, 255, 0.50)";
+      ctx.font = "600 16px monospace";
+      ctx.textAlign = "right";
+      ctx.fillText(`Generated at ${formatJST(Date.now())} JST`, W - marginX, headerY);
+      ctx.textAlign = "left";
+
+      slots.forEach((slot, idx) => {
+        const pred = getPredictionFor(slot.key, slot.rank);
+        const meta = {
+          item: state.eligibleItems.find((x) => x.key === slot.key),
+          rank: slot.rank,
+        };
+        const cx = marginX + idx * (cardW + gapX);
+        drawComparisonSlot(ctx, cx, cardY, cardW, cardH, pred, meta);
+      });
+    }
+
+    function drawComparisonSlot(ctx, x, y, w, h, pred, meta) {
+      const rank = pred ? pred.rank : meta.rank || 5000;
+      const theme = getTierTheme(rank);
+      const rankTitle = getTierRankTitle(rank);
+
+      ctx.save();
+      drawRoundRect(ctx, x, y, w, h, 18);
+      const cardBg = ctx.createLinearGradient(x, y, x + w, y + h);
+      cardBg.addColorStop(0, theme.bgStops[0]);
+      cardBg.addColorStop(0.5, theme.bgStops[1]);
+      cardBg.addColorStop(1, theme.bgStops[2]);
+      ctx.fillStyle = cardBg;
+      ctx.fill();
+
+      const aura = ctx.createRadialGradient(x + w * 0.8, y + 80, 15, x + w * 0.8, y + 80, 320);
+      aura.addColorStop(0, theme.glowColor);
+      aura.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = aura;
+      ctx.fillRect(x, y, w, h);
+
+      if (theme.rainbow) {
+        const rbAura = ctx.createLinearGradient(x, y, x + w, y + h);
+        rbAura.addColorStop(0, "rgba(255, 77, 109, 0.14)");
+        rbAura.addColorStop(0.35, "rgba(255, 183, 3, 0.12)");
+        rbAura.addColorStop(0.7, "rgba(6, 214, 160, 0.12)");
+        rbAura.addColorStop(1, "rgba(58, 134, 255, 0.16)");
+        ctx.fillStyle = rbAura;
+        ctx.fillRect(x, y, w, h);
+      }
+      ctx.restore();
+
+      if (theme.sparkle) {
+        const relStars = [
+          [44, 46, 2.8], [w - 50, 40, 3.2], [w - 100, 125, 2.5],
+          [w - 44, h - 46, 2.8], [52, h - 42, 2.3], [w * 0.55, 32, 2.2],
+        ];
+        for (const [sx, sy, sr] of relStars) {
+          ctx.save();
+          ctx.fillStyle = "#ffffff";
+          ctx.shadowColor = theme.forecast;
+          ctx.shadowBlur = 14;
+          ctx.beginPath();
+          ctx.arc(x + sx, y + sy, sr, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        }
+      }
+
+      const borderGrad = ctx.createLinearGradient(x, y, x + w, y + h);
+      theme.borderStops.forEach((c, idx) => {
+        borderGrad.addColorStop(idx / Math.max(1, theme.borderStops.length - 1), c);
+      });
+      ctx.save();
+      drawRoundRect(ctx, x, y, w, h, 18);
+      ctx.lineWidth = 4.5;
+      ctx.strokeStyle = borderGrad;
+      if (theme.sparkle) {
+        ctx.shadowColor = theme.glowColor;
+        ctx.shadowBlur = 20;
+      }
+      ctx.stroke();
+      ctx.restore();
+
+      const pad = 26;
+      const badgeW = rankTitle ? 196 : 148;
+      const badgeH = 44;
+      const badgeX = x + w - pad - badgeW;
+      const badgeY = y + 44;
+      const badgeLabel = rankTitle ? `${rankTitle} / T${rank.toLocaleString()}` : `T${rank.toLocaleString()}`;
+
+      if (!pred) {
+        const titleStr = meta.item ? meta.item.shortLabel : "未選択";
+        ctx.fillStyle = theme.primary;
+        ctx.font = "800 30px sans-serif";
+        drawFittedText(ctx, `${titleStr} (${badgeLabel})`, x + pad, y + 66, w - pad * 2);
+
+        ctx.fillStyle = "rgba(255, 255, 255, 0.65)";
+        ctx.font = "600 17px sans-serif";
+        ctx.fillText("このイベント・順位のJSONデータが未取得です。", x + pad, y + 120);
+        ctx.fillText("上のボタンからAPIデータをコピーしてください。", x + pad, y + 152);
+        return;
+      }
+
+      ctx.fillStyle = "rgba(255, 255, 255, 0.68)";
+      ctx.font = "600 15px sans-serif";
+      drawFittedText(
+        ctx,
+        `${pred.targetItem.catLabel} ｜ ${formatJST(pred.targetItem.startTime)} 〜 ${formatJST(pred.targetItem.endTime)}`,
+        x + pad,
+        y + 32,
+        w - pad * 2
+      );
+
+      ctx.save();
+      ctx.font = "800 32px sans-serif";
+      ctx.fillStyle = theme.primary;
+      if (theme.sparkle) {
+        ctx.shadowColor = theme.glowColor;
+        ctx.shadowBlur = 14;
+      }
+      drawFittedText(ctx, pred.targetItem.shortLabel, x + pad, y + 78, w - pad * 2 - badgeW - 14);
+      ctx.restore();
+
+      ctx.save();
+      drawRoundRect(ctx, badgeX, badgeY, badgeW, badgeH, 10);
+      ctx.fillStyle = "rgba(255, 255, 255, 0.11)";
+      ctx.fill();
+      ctx.lineWidth = 2.2;
+      ctx.strokeStyle = borderGrad;
+      ctx.stroke();
+      ctx.fillStyle = theme.primary;
+      ctx.font = "800 20px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(badgeLabel, badgeX + badgeW / 2, badgeY + 29);
+      ctx.restore();
+
+      const heroX = x + pad;
+      const heroY = y + 102;
+      const heroW = w - pad * 2;
+      const heroH = 122;
+      ctx.save();
+      drawRoundRect(ctx, heroX, heroY, heroW, heroH, 12);
+      ctx.fillStyle = "rgba(0, 0, 0, 0.36)";
+      ctx.fill();
+      ctx.lineWidth = 1.2;
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.16)";
+      ctx.stroke();
+      ctx.restore();
+
+      ctx.fillStyle = "rgba(255, 255, 255, 0.74)";
+      ctx.font = "700 15px sans-serif";
+      ctx.fillText(pred.isFinished ? "最終確定ボーダー" : "最終着地予測ボーダー（本命）", heroX + 18, heroY + 28);
+
+      ctx.save();
+      ctx.font = "800 44px monospace";
+      if (theme.rainbow) {
+        const txtGrad = ctx.createLinearGradient(heroX + 18, 0, heroX + 380, 0);
+        txtGrad.addColorStop(0, "#ff758f");
+        txtGrad.addColorStop(0.35, "#ffd166");
+        txtGrad.addColorStop(0.7, "#06d6a0");
+        txtGrad.addColorStop(1, "#60a5fa");
+        ctx.fillStyle = txtGrad;
+      } else {
+        ctx.fillStyle = theme.forecast;
+      }
+      if (theme.sparkle) {
+        ctx.shadowColor = theme.glowColor;
+        ctx.shadowBlur = 16;
+      }
+      ctx.fillText(`${formatNumber(pred.centralFinal)} pt`, heroX + 18, heroY + 76);
+      ctx.restore();
+
+      if (!pred.isFinished) {
+        ctx.fillStyle = theme.accent;
+        ctx.font = "700 16px monospace";
+        ctx.fillText(
+          `誤差目安: ±${formatNumber(pred.halfSpread)} pt  (${formatNumber(pred.minFinal)} 〜 ${formatNumber(pred.maxFinal)})`,
+          heroX + 18,
+          heroY + 106
+        );
+      } else {
+        ctx.fillStyle = theme.accent;
+        ctx.font = "700 16px sans-serif";
+        ctx.fillText("イベント終了・確定スコア", heroX + 18, heroY + 106);
+      }
+
+      const gridY = y + 238;
+      const colW = (w - pad * 2 - 14) / 2;
+      const cellH = 44;
+      const subCells = [
+        { k: "現在スコア", v: `${formatNumber(pred.currentScore)} pt`, cx: x + pad, cy: gridY },
+        {
+          k: "経過 / 進捗",
+          v: `${pred.elapsedH.toFixed(1)}h / ${pred.totalH.toFixed(0)}h (${(pred.pCur * 100).toFixed(1)}%)`,
+          cx: x + pad + colW + 14,
+          cy: gridY,
+        },
+        { k: "直近時速", v: `${formatNumber(pred.recentPace)} pt/h`, cx: x + pad, cy: gridY + cellH + 8 },
+        {
+          k: "残り予測増分",
+          v: pred.isFinished ? "0 pt" : `+${formatNumber(Math.max(0, pred.centralFinal - pred.currentScore))} pt`,
+          cx: x + pad + colW + 14,
+          cy: gridY + cellH + 8,
+        },
+      ];
+
+      for (const cell of subCells) {
+        ctx.save();
+        drawRoundRect(ctx, cell.cx, cell.cy, colW, cellH, 8);
+        ctx.fillStyle = "rgba(255, 255, 255, 0.06)";
+        ctx.fill();
+        ctx.restore();
+
+        ctx.fillStyle = "rgba(255, 255, 255, 0.64)";
+        ctx.font = "600 14px sans-serif";
+        ctx.fillText(cell.k, cell.cx + 12, cell.cy + 27);
+
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "700 15px monospace";
+        ctx.textAlign = "right";
+        ctx.fillText(cell.v, cell.cx + colW - 12, cell.cy + 27);
+        ctx.textAlign = "left";
+      }
+
+      const topSplitY = gridY + cellH * 2 + 20;
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.16)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(x + pad, topSplitY);
+      ctx.lineTo(x + w - pad, topSplitY);
+      ctx.stroke();
+
+      const gBoxX = x + pad;
+      const gBoxY = topSplitY + 10;
+      const gBoxW = w - pad * 2;
+      const gBoxH = y + h - 20 - gBoxY;
+
+      ctx.save();
+      drawRoundRect(ctx, gBoxX, gBoxY, gBoxW, gBoxH, 12);
+      ctx.fillStyle = "rgba(0, 0, 0, 0.36)";
+      ctx.fill();
+      ctx.lineWidth = 1.2;
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
+      ctx.stroke();
+      ctx.restore();
+
+      ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
+      ctx.font = "700 15px sans-serif";
+      ctx.fillText("推移実績 & 着地予測レンジ", gBoxX + 16, gBoxY + 26);
+
+      ctx.fillStyle = "rgba(255, 255, 255, 0.58)";
+      ctx.font = "600 13px monospace";
+      ctx.textAlign = "right";
+      ctx.fillText(`基準: ${formatJST(pred.lastT)}`, gBoxX + gBoxW - 16, gBoxY + 26);
+      ctx.textAlign = "left";
+
+      const gPadL = 68, gPadR = 18, gPadT = 40, gPadB = 32;
+      const plotX = gBoxX + gPadL;
+      const plotY = gBoxY + gPadT;
+      const plotW = gBoxW - gPadL - gPadR;
+      const plotH = gBoxH - gPadT - gPadB;
+
+      let maxY = Math.max(pred.maxFinal, pred.currentScore);
+      for (const m of pred.refModels.slice(0, 3)) maxY = Math.max(maxY, m.hFinal);
+      maxY = Math.ceil((maxY * 1.06) / 100000) * 100000 || 500000;
+
+      const xOf = (p) => plotX + Math.max(0, Math.min(1, p)) * plotW;
+      const yOf = (v) => plotY + plotH - (Math.max(0, v) / maxY) * plotH;
+
+      ctx.font = "600 13px monospace";
+      ctx.textAlign = "right";
+      for (let i = 0; i <= 4; i++) {
+        const val = (maxY * i) / 4;
+        const gy = yOf(val);
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.10)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(plotX, gy);
+        ctx.lineTo(plotX + plotW, gy);
+        ctx.stroke();
+
+        ctx.fillStyle = "rgba(255, 255, 255, 0.68)";
+        const lbl = val >= 10000 ? `${(val / 10000).toFixed(0)}万` : formatNumber(val);
+        ctx.fillText(lbl, plotX - 10, gy + 4);
+      }
+
+      ctx.textAlign = "center";
+      const stepH = pred.totalH <= 48 ? 12 : 24;
+      for (let hr = 0; hr <= pred.totalH; hr += stepH) {
+        const gx = xOf(hr / pred.totalH);
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.07)";
+        ctx.beginPath();
+        ctx.moveTo(gx, plotY);
+        ctx.lineTo(gx, plotY + plotH);
+        ctx.stroke();
+
+        ctx.fillStyle = "rgba(255, 255, 255, 0.68)";
+        ctx.fillText(`${hr}h`, gx, plotY + plotH + 20);
+      }
+      ctx.textAlign = "left";
+
+      pred.refModels.slice(0, 2).forEach((m) => {
+        const g = m.graph;
+        const dur = g.endTime - g.startTime;
+        ctx.save();
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.22)";
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        const step = Math.max(1, Math.floor(g.tier.length / 120));
+        for (let i = 0; i < g.tier.length; i += step) {
+          const [t, v] = g.tier[i];
+          const px = xOf((t - g.startTime) / dur);
+          const py = yOf(v);
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        }
+        ctx.stroke();
+        ctx.restore();
+      });
+
+      if (!pred.isFinished && pred.forecastSeries.length > 1) {
+        ctx.save();
+        ctx.fillStyle = theme.bandFill;
+        ctx.beginPath();
+        pred.forecastSeries.forEach((pt, i) => {
+          const px = xOf(pt.p);
+          const py = yOf(pt.max);
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        });
+        for (let i = pred.forecastSeries.length - 1; i >= 0; i--) {
+          const pt = pred.forecastSeries[i];
+          ctx.lineTo(xOf(pt.p), yOf(pt.min));
+        }
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.setLineDash([7, 5]);
+        ctx.lineWidth = 3.2;
+        ctx.strokeStyle = theme.forecast;
+        if (theme.sparkle) {
+          ctx.shadowColor = theme.glowColor;
+          ctx.shadowBlur = 10;
+        }
+        ctx.beginPath();
+        pred.forecastSeries.forEach((pt, i) => {
+          const px = xOf(pt.p);
+          const py = yOf(pt.central);
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        });
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      const tPts = pred.targetGraph.tier;
+      const tDur = pred.targetGraph.endTime - pred.targetGraph.startTime;
+      ctx.save();
+      if (theme.rainbow) {
+        const lineGrad = ctx.createLinearGradient(plotX, 0, plotX + plotW, 0);
+        lineGrad.addColorStop(0, "#ff4d6d");
+        lineGrad.addColorStop(0.3, "#ffb703");
+        lineGrad.addColorStop(0.6, "#06d6a0");
+        lineGrad.addColorStop(1, "#3a86ff");
+        ctx.strokeStyle = lineGrad;
+      } else {
+        ctx.strokeStyle = theme.accent;
+      }
+      ctx.lineWidth = 3.8;
+      if (theme.sparkle) {
+        ctx.shadowColor = theme.glowColor;
+        ctx.shadowBlur = 12;
+      }
+      ctx.beginPath();
+      const step = Math.max(1, Math.floor(tPts.length / 180));
+      for (let i = 0; i < tPts.length; i += step) {
+        const [t, v] = tPts[i];
+        const px = xOf((t - pred.targetGraph.startTime) / tDur);
+        const py = yOf(v);
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      const [lt, lv] = tPts[tPts.length - 1];
+      const lx = xOf((lt - pred.targetGraph.startTime) / tDur);
+      const ly = yOf(lv);
+      ctx.lineTo(lx, ly);
+      ctx.stroke();
+
+      ctx.fillStyle = "#ffffff";
+      ctx.beginPath();
+      ctx.arc(lx, ly, 5.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+
+      const endY = yOf(pred.centralFinal);
+      ctx.save();
+      ctx.fillStyle = theme.forecast;
+      ctx.beginPath();
+      ctx.arc(xOf(1), endY, 5.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // =========================================================================
+    // 7. UI 描画・コントロール制御・一斉配信
+    // =========================================================================
+    function renderAllUI() {
+      const evSel = document.getElementById("targetEventSelect");
+      evSel.innerHTML = "";
+      for (const item of state.eligibleItems) {
+        const opt = document.createElement("option");
+        opt.value = item.key;
+        opt.textContent = item.label;
+        evSel.appendChild(opt);
+      }
+      if (state.selectedKey) evSel.value = state.selectedKey;
+
+      const ranks = [];
+      for (const k of state.graphCache.keys()) {
+        if (k.startsWith(`${state.selectedKey}::`)) {
+          ranks.push(Number(k.split("::").pop()));
+        }
+      }
+      document.getElementById("cachedRanksInfo").textContent =
+        ranks.length > 0
+          ? `選択中イベントの取得済み順位: ${ranks.sort((a, b) => a - b).map((r) => "T" + r.toLocaleString()).join(", ")}`
+          : "選択中イベントのグラフデータはまだ取得されていません。";
+
+      renderSlotEditor();
+      updateTextPreviews();
+      renderActiveCanvas();
+    }
+
+    function renderSlotEditor() {
+      const editor = document.getElementById("slotEditor");
+      editor.innerHTML = "";
+      const rankOptions = [100, 500, 1000, 5000, 10000, 50000, 100000, 200000];
+
+      const makeRankSelect = (val, onChange) => {
+        const s = document.createElement("select");
+        rankOptions.forEach((r) => {
+          const o = document.createElement("option");
+          o.value = r;
+          o.textContent = `T${r.toLocaleString()}`;
+          if (Number(val) === r) o.selected = true;
+          s.appendChild(o);
+        });
+        s.onchange = (e) => { onChange(Number(e.target.value)); renderActiveCanvas(); };
+        return s;
+      };
+
+      const makeEventSelect = (val, onChange) => {
+        const s = document.createElement("select");
+        state.eligibleItems.forEach((it) => {
+          const o = document.createElement("option");
+          o.value = it.key;
+          o.textContent = it.shortLabel;
+          if (val === it.key) o.selected = true;
+          s.appendChild(o);
+        });
+        s.onchange = (e) => { onChange(e.target.value); renderActiveCanvas(); };
+        return s;
+      };
+
+      if (state.mode === "single") {
+        const row = document.createElement("div");
+        row.className = "row";
+        row.append(
+          "表示対象: ",
+          makeEventSelect(state.single.key, (k) => (state.single.key = k)),
+          makeRankSelect(state.single.rank, (r) => (state.single.rank = r))
+        );
+        editor.appendChild(row);
+      } else if (state.mode === "dual") {
+        ["左枠", "右枠"].forEach((lbl, idx) => {
+          const row = document.createElement("div");
+          row.className = "row";
+          row.append(
+            `${lbl}: `,
+            makeEventSelect(state.dual[idx].key, (k) => (state.dual[idx].key = k)),
+            makeRankSelect(state.dual[idx].rank, (r) => (state.dual[idx].rank = r))
+          );
+          editor.appendChild(row);
+        });
+      } else {
+        ["左枠（標準: ドリーム級）", "中央枠（標準: ダイヤ級）", "右枠（標準: プラチナ級）"].forEach((lbl, idx) => {
+          const row = document.createElement("div");
+          row.className = "row";
+          row.append(
+            `${lbl}: `,
+            makeEventSelect(state.triple[idx].key, (k) => (state.triple[idx].key = k)),
+            makeRankSelect(state.triple[idx].rank, (r) => (state.triple[idx].rank = r))
+          );
+          editor.appendChild(row);
+        });
+      }
+    }
+
+    function onModeOrThemeChanged() {
+      state.mode = document.getElementById("modeSelect").value;
+      state.themeOverride = document.getElementById("themeSelect").value;
+      renderSlotEditor();
+      renderActiveCanvas();
+    }
+
+    document.getElementById("targetEventSelect").addEventListener("change", (e) => {
+      const newKey = e.target.value;
+      state.selectedKey = newKey;
+      state.single.key = newKey;
+      state.dual.forEach((s) => (s.key = newKey));
+      state.triple.forEach((s) => (s.key = newKey));
+      renderAllUI();
+    });
+
+    async function triggerBroadcast() {
+      if (!confirm("現在プレビュー中の内容で、購読登録されている全Discordチャンネルへ一斉通知を送信します。よろしいですか？")) {
+        return;
+      }
+
+      const btn = document.getElementById("broadcastBtn");
+      btn.disabled = true;
+      btn.textContent = "送信中...";
+
+      try {
+        const canvas = document.getElementById("reportCanvas");
+        const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+
+        const formData = new FormData();
+        formData.append("nowBorderText", buildNowBorderText());
+        formData.append("customText", document.getElementById("customTextInput").value.trim());
+        formData.append("customTextPosition", document.getElementById("customTextPosSelect").value);
+        if (blob) {
+          formData.append("image", blob, "border_prediction.png");
+        }
+
+        const res = await apiFetch("/api/admin/broadcast", {
+          method: "POST",
+          body: formData,
+        });
+        const data = await res.json();
+        if (data.ok) {
+          showToast(data.message);
+        } else {
+          alert("送信エラー: " + (data.error || "不明なエラー"));
+        }
+      } catch (err) {
+        alert("通信エラー: " + err.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "🚀 Botに反映（登録チャンネルへ一斉通知）";
+      }
+    }
+
+    if (adminPassword) {
+      document.getElementById("loginOverlay").style.display = "none";
+      initializeApp();
+    }
+  </script>
+</body>
+</html>
