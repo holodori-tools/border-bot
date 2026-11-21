@@ -13,7 +13,7 @@ const {
 const { DataStore } = require("./store");
 const { commands } = require("./commands");
 
-const PORT = Number(process.env.PORT) || 8000;
+const PORT = Number(process.env.SERVER_PORT || process.env.PORT) || 8000;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "2226";
 
 const store = new DataStore();
