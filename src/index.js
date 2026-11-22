@@ -12,13 +12,24 @@ const {
 } = require("discord.js");
 
 let createCanvas = null;
-let registerFont = null;
+let registerCustomFont = null;
 try {
-  const canvasPkg = require("canvas");
-  createCanvas = canvasPkg.createCanvas;
-  registerFont = canvasPkg.registerFont;
-} catch (err) {
-  console.warn("[Canvas] canvas パッケージ未読込（npm install 後に有効化されます）:", err.message);
+  const napiCanvas = require("@napi-rs/canvas");
+  createCanvas = napiCanvas.createCanvas;
+  registerCustomFont = (fontPath, family) => {
+    napiCanvas.GlobalFonts.registerFromPath(fontPath, family);
+  };
+} catch (_) {
+  try {
+    const nodeCanvas = require("canvas");
+    createCanvas = nodeCanvas.createCanvas;
+    registerCustomFont = (fontPath, family) => {
+      nodeCanvas.registerFont(fontPath, { family, weight: "bold" });
+      nodeCanvas.registerFont(fontPath, { family, weight: "normal" });
+    };
+  } catch (err) {
+    console.warn("[Canvas] Canvasパッケージ未読込:", err.message);
+  }
 }
 
 const app = express();
@@ -47,21 +58,25 @@ const TIER_DEFS = [
 let serverFontFamily = "sans-serif";
 
 async function ensureJapaneseFont() {
-  if (!registerFont) return;
+  if (!registerCustomFont) return;
   const fontPath = "/tmp/NotoSansJP-Bold.ttf";
   try {
     if (!fs.existsSync(fontPath)) {
-      const fontUrl =
-        "https://raw.githubusercontent.com/google/fonts/main/ofl/notosansjp/NotoSansJP%5Bwght%5D.ttf";
-      const res = await fetch(fontUrl);
-      if (res.ok) {
-        const buf = Buffer.from(await res.arrayBuffer());
-        fs.writeFileSync(fontPath, buf);
+      const fontUrls = [
+        "https://cdn.jsdelivr.net/fontsource/fonts/noto-sans-jp@latest/japanese-700-normal.ttf",
+        "https://raw.githubusercontent.com/google/fonts/main/ofl/notosansjp/NotoSansJP%5Bwght%5D.ttf",
+      ];
+      for (const url of fontUrls) {
+        const res = await fetch(url);
+        if (res.ok) {
+          const buf = Buffer.from(await res.arrayBuffer());
+          fs.writeFileSync(fontPath, buf);
+          break;
+        }
       }
     }
     if (fs.existsSync(fontPath)) {
-      registerFont(fontPath, { family: "NotoSansJP", weight: "bold" });
-      registerFont(fontPath, { family: "NotoSansJP", weight: "normal" });
+      registerCustomFont(fontPath, "NotoSansJP");
       serverFontFamily = "NotoSansJP, sans-serif";
       console.log("[Font] 日本語フォント (NotoSansJP) 登録完了");
     }
@@ -964,7 +979,12 @@ function renderServerTripleImageBuffer(targetItem, predsByRank) {
   if (pngBuf.length <= 850 * 1024) {
     return { buffer: pngBuf, filename: "border_prediction.png" };
   }
-  const jpgBuf = canvas.toBuffer("image/jpeg", { quality: 0.90 });
+  let jpgBuf;
+  try {
+    jpgBuf = canvas.toBuffer("image/jpeg", 90);
+  } catch (_) {
+    jpgBuf = canvas.toBuffer("image/jpeg", { quality: 0.90 });
+  }
   return { buffer: jpgBuf, filename: "border_prediction.jpg" };
 }
 
