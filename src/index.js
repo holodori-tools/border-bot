@@ -38,6 +38,21 @@ const memStore = {
   predictionCache: null,  // { imageBase64, timeLabel, updatedAt }
 };
 
+function normalizeSubscriptions(val) {
+  if (!val) return [];
+  if (Array.isArray(val)) {
+    return val
+      .map((v) => (typeof v === "string" ? v : v?.channelId || v?.id))
+      .filter((id) => typeof id === "string" && id.length > 0);
+  }
+  if (typeof val === "object") {
+    if (Array.isArray(val.subscriptions)) return normalizeSubscriptions(val.subscriptions);
+    if (Array.isArray(val.channels)) return normalizeSubscriptions(val.channels);
+    return Object.keys(val).filter((k) => /^\d+$/.test(k));
+  }
+  return [];
+}
+
 async function redisCommand(args) {
   if (!UPSTASH_URL || !UPSTASH_TOKEN) return null;
   try {
@@ -58,6 +73,10 @@ async function redisCommand(args) {
   }
 }
 
+async function saveRedisJson(key, value) {
+  await redisCommand(["SET", key, JSON.stringify(value)]);
+}
+
 async function loadStateFromRedis() {
   const [evRaw, grRaw, subRaw, nbRaw, prRaw] = await Promise.all([
     redisCommand(["GET", "borderbot:events"]),
@@ -68,13 +87,27 @@ async function loadStateFromRedis() {
   ]);
 
   if (evRaw) {
-    try { memStore.events = JSON.parse(evRaw); } catch (_) {}
+    try {
+      const parsedEv = JSON.parse(evRaw);
+      memStore.events = Array.isArray(parsedEv) ? parsedEv : [];
+    } catch (_) {}
   }
   if (grRaw) {
-    try { memStore.graphs = JSON.parse(grRaw); } catch (_) {}
+    try {
+      const parsedGr = JSON.parse(grRaw);
+      memStore.graphs = parsedGr && typeof parsedGr === "object" && !Array.isArray(parsedGr) ? parsedGr : {};
+    } catch (_) {}
   }
   if (subRaw) {
-    try { memStore.subscriptions = JSON.parse(subRaw); } catch (_) {}
+    try {
+      const parsedSub = JSON.parse(subRaw);
+      memStore.subscriptions = normalizeSubscriptions(parsedSub);
+      if (!Array.isArray(parsedSub)) {
+        await saveRedisJson("borderbot:subscriptions", memStore.subscriptions);
+      }
+    } catch (_) {
+      memStore.subscriptions = [];
+    }
   }
   if (nbRaw) {
     try { memStore.nowBorderCache = JSON.parse(nbRaw); } catch (_) {}
@@ -82,10 +115,6 @@ async function loadStateFromRedis() {
   if (prRaw) {
     try { memStore.predictionCache = JSON.parse(prRaw); } catch (_) {}
   }
-}
-
-async function saveRedisJson(key, value) {
-  await redisCommand(["SET", key, JSON.stringify(value)]);
 }
 
 // =========================================================================
@@ -111,7 +140,6 @@ function rebuildNowBorderCacheFromGraphs(targetPrefix = null) {
   const keys = Object.keys(memStore.graphs);
   if (keys.length === 0) return memStore.nowBorderCache;
 
-  // prefix が未指定の場合、最も新しいデータ時刻を持つイベントキーを自動選択
   let chosenPrefix = targetPrefix;
   if (!chosenPrefix) {
     let newestTs = -1;
@@ -205,6 +233,7 @@ client.on("interactionCreate", async (interaction) => {
 
   try {
     if (commandName === "subscribe") {
+      if (!Array.isArray(memStore.subscriptions)) memStore.subscriptions = [];
       if (!memStore.subscriptions.includes(channelId)) {
         memStore.subscriptions.push(channelId);
         await saveRedisJson("borderbot:subscriptions", memStore.subscriptions);
@@ -217,6 +246,7 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (commandName === "unsubscribe") {
+      if (!Array.isArray(memStore.subscriptions)) memStore.subscriptions = [];
       memStore.subscriptions = memStore.subscriptions.filter((id) => id !== channelId);
       await saveRedisJson("borderbot:subscriptions", memStore.subscriptions);
       await interaction.reply({
@@ -328,10 +358,11 @@ app.post("/api/admin/login", (req, res) => {
 });
 
 app.get("/api/admin/bootstrap", requireAdmin, (_req, res) => {
+  const subs = normalizeSubscriptions(memStore.subscriptions);
   res.json({
     events: memStore.events,
     graphs: memStore.graphs,
-    subscriptionCount: memStore.subscriptions.length,
+    subscriptionCount: subs.length,
     nowBorderCache: memStore.nowBorderCache
       ? { text: memStore.nowBorderCache.text, timeLabel: memStore.nowBorderCache.timeLabel }
       : null,
@@ -365,7 +396,6 @@ app.post("/api/admin/cache-graph", requireAdmin, async (req, res) => {
   res.json({ ok: true });
 });
 
-// 管理画面から予測画像キャッシュのみを静かに更新するエンドポイント
 app.post("/api/admin/cache-prediction", requireAdmin, upload.single("image"), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: "No image uploaded" });
@@ -381,83 +411,90 @@ app.post("/api/admin/cache-prediction", requireAdmin, upload.single("image"), as
   res.json({ ok: true, timeLabel });
 });
 
-// 登録チャンネルへの一斉通知（Pattern A）＋ キャッシュ同時更新
 app.post("/api/admin/broadcast", requireAdmin, upload.single("image"), async (req, res) => {
-  const nowBorderText = (req.body.nowBorderText || "").trim();
-  const customText = (req.body.customText || "").trim();
-  const customTextPosition = req.body.customTextPosition || "below";
-  const imageBuffer = req.file ? req.file.buffer : null;
+  try {
+    const nowBorderText = (req.body.nowBorderText || "").trim();
+    const customText = (req.body.customText || "").trim();
+    const customTextPosition = req.body.customTextPosition || "below";
+    const imageBuffer = req.file ? req.file.buffer : null;
+    const filename = req.file?.originalname || "border_prediction.png";
 
-  // キャッシュも最新状態に更新
-  if (nowBorderText) {
-    const m = /最終更新\(([^)]+)\)/.exec(nowBorderText);
-    const timeLabel = m ? m[1] : formatRoundedJstTime(Date.now());
-    memStore.nowBorderCache = {
-      text: nowBorderText,
-      timeLabel,
-      updatedAt: Date.now(),
-    };
-    await saveRedisJson("borderbot:cache:nowborder", memStore.nowBorderCache);
-  }
+    if (nowBorderText) {
+      const m = /最終更新\(([^)]+)\)/.exec(nowBorderText);
+      const timeLabel = m ? m[1] : formatRoundedJstTime(Date.now());
+      memStore.nowBorderCache = {
+        text: nowBorderText,
+        timeLabel,
+        updatedAt: Date.now(),
+      };
+      await saveRedisJson("borderbot:cache:nowborder", memStore.nowBorderCache);
+    }
 
-  if (imageBuffer) {
-    const m = /最終更新\(([^)]+)\)/.exec(nowBorderText);
-    const timeLabel = m ? m[1] : formatRoundedJstTime(Date.now());
-    memStore.predictionCache = {
-      imageBase64: imageBuffer.toString("base64"),
-      timeLabel,
-      updatedAt: Date.now(),
-    };
-    await saveRedisJson("borderbot:cache:prediction", memStore.predictionCache);
-  }
+    if (imageBuffer) {
+      const m = /最終更新\(([^)]+)\)/.exec(nowBorderText);
+      const timeLabel = m ? m[1] : formatRoundedJstTime(Date.now());
+      memStore.predictionCache = {
+        imageBase64: imageBuffer.toString("base64"),
+        timeLabel,
+        updatedAt: Date.now(),
+      };
+      await saveRedisJson("borderbot:cache:prediction", memStore.predictionCache);
+    }
 
-  if (memStore.subscriptions.length === 0) {
+    const subs = normalizeSubscriptions(memStore.subscriptions);
+    memStore.subscriptions = subs;
+
+    if (subs.length === 0) {
+      return res.json({
+        ok: true,
+        message: "キャッシュを更新しました（通知購読チャンネルは現在0件です）。",
+      });
+    }
+
+    let successCount = 0;
+    let failCount = 0;
+
+    for (const chId of subs) {
+      try {
+        const channel = await client.channels.fetch(chId);
+        if (!channel || !channel.isTextBased()) {
+          failCount++;
+          continue;
+        }
+
+        const files = imageBuffer
+          ? [new AttachmentBuilder(imageBuffer, { name: filename })]
+          : [];
+
+        if (customText && customTextPosition === "above") {
+          await channel.send({
+            content: `${customText}\n\n${nowBorderText}`,
+            files,
+          });
+        } else {
+          await channel.send({
+            content: nowBorderText,
+            files,
+          });
+          if (customText && customTextPosition === "below") {
+            await channel.send({ content: customText });
+          }
+        }
+        successCount++;
+      } catch (err) {
+        console.error(`[Broadcast] 送信失敗 (${chId}):`, err.message);
+        failCount++;
+      }
+    }
+
     return res.json({
       ok: true,
-      message: "キャッシュを更新しました（通知購読チャンネルは現在0件です）。",
+      message: `一斉通知を完了しました（成功: ${successCount}ch / 失敗: ${failCount}ch）`,
     });
+  } catch (err) {
+    console.error("[Broadcast] 致命的エラー:", err);
+    return res.status(500).json({ ok: false, error: err.message });
   }
-
-  let successCount = 0;
-  let failCount = 0;
-
-  for (const chId of memStore.subscriptions) {
-    try {
-      const channel = await client.channels.fetch(chId);
-      if (!channel || !channel.isTextBased()) {
-        failCount++;
-        continue;
-      }
-
-      const files = imageBuffer
-        ? [new AttachmentBuilder(imageBuffer, { name: "border_prediction.png" })]
-        : [];
-
-      if (customText && customTextPosition === "above") {
-        await channel.send({
-          content: `${customText}\n\n${nowBorderText}`,
-          files,
-        });
-      } else {
-        await channel.send({
-          content: nowBorderText,
-          files,
-        });
-        if (customText && customTextPosition === "below") {
-          await channel.send({ content: customText });
-        }
-      }
-      successCount++;
-    } catch (err) {
-      console.error(`[Broadcast] 送信失敗 (${chId}):`, err.message);
-      failCount++;
-    }
-  }
-
-  res.json({
-    ok: true,
-    message: `一斉通知を完了しました（成功: ${successCount}ch / 失敗: ${failCount}ch）`,
-  });
 });
 
 // =========================================================================
