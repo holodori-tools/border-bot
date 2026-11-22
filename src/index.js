@@ -59,29 +59,49 @@ let serverFontFamily = "sans-serif";
 
 async function ensureJapaneseFont() {
   if (!registerCustomFont) return;
-  const fontPath = "/tmp/NotoSansJP-Bold.ttf";
+  const jpFontPath = "/tmp/NotoSansJP-Bold.ttf";
+  const symFontPath = "/tmp/NotoSansSymbols2-Regular.ttf";
   try {
-    if (!fs.existsSync(fontPath)) {
-      const fontUrls = [
+    if (!fs.existsSync(jpFontPath)) {
+      const jpUrls = [
         "https://cdn.jsdelivr.net/fontsource/fonts/noto-sans-jp@latest/japanese-700-normal.ttf",
         "https://raw.githubusercontent.com/google/fonts/main/ofl/notosansjp/NotoSansJP%5Bwght%5D.ttf",
       ];
-      for (const url of fontUrls) {
+      for (const url of jpUrls) {
         const res = await fetch(url);
         if (res.ok) {
-          const buf = Buffer.from(await res.arrayBuffer());
-          fs.writeFileSync(fontPath, buf);
+          fs.writeFileSync(jpFontPath, Buffer.from(await res.arrayBuffer()));
           break;
         }
       }
     }
-    if (fs.existsSync(fontPath)) {
-      registerCustomFont(fontPath, "NotoSansJP");
-      serverFontFamily = "NotoSansJP, sans-serif";
-      console.log("[Font] 日本語フォント (NotoSansJP) 登録完了");
+    if (!fs.existsSync(symFontPath)) {
+      const symUrls = [
+        "https://raw.githubusercontent.com/google/fonts/main/ofl/notosanssymbols2/NotoSansSymbols2-Regular.ttf",
+        "https://cdn.jsdelivr.net/fontsource/fonts/noto-sans-symbols-2@latest/symbols-400-normal.ttf",
+      ];
+      for (const url of symUrls) {
+        const res = await fetch(url);
+        if (res.ok) {
+          fs.writeFileSync(symFontPath, Buffer.from(await res.arrayBuffer()));
+          break;
+        }
+      }
     }
+    const families = [];
+    if (fs.existsSync(jpFontPath)) {
+      registerCustomFont(jpFontPath, "NotoSansJP");
+      families.push("NotoSansJP");
+    }
+    if (fs.existsSync(symFontPath)) {
+      registerCustomFont(symFontPath, "NotoSymbols2");
+      families.push("NotoSymbols2");
+    }
+    families.push("sans-serif");
+    serverFontFamily = families.join(", ");
+    console.log(`[Font] フォント登録完了: ${serverFontFamily}`);
   } catch (err) {
-    console.warn("[Font] 日本語フォント取得スキップ:", err.message);
+    console.warn("[Font] フォント取得スキップ:", err.message);
   }
 }
 
@@ -468,10 +488,13 @@ function getJstTimeZoneConfig(lastT, remH, pCur) {
   }
 
   if (remH <= 2.0) {
-    return { label: "最終追い込み(残2h内)", winH: 0.75, wPace: 0.70, clampLo: 0.65, clampHi: 1.50 };
+    return { label: "最終追い込み(残2h内)", winH: 0.75, wPace: 0.80, clampLo: 0.70, clampHi: 1.65 };
   }
   if (remH <= 4.0) {
-    return { label: "スパート予兆(残4h内)", winH: 1.5, wPace: Math.max(zone.wPace, 0.45), clampLo: 0.72, clampHi: 1.35 };
+    return { label: "スパート加速(残4h内)", winH: 1.25, wPace: 0.65, clampLo: 0.75, clampHi: 1.55 };
+  }
+  if (remH <= 6.0) {
+    return { label: "終盤スパート域(残6h内)", winH: 1.75, wPace: Math.max(zone.wPace, 0.52), clampLo: 0.78, clampHi: 1.45 };
   }
   if (pCur < 0.35) {
     const earlyBoost = 0.22 * (1.0 - pCur / 0.35);
@@ -494,7 +517,7 @@ function computePredictionServer(targetItem, targetGraph, refPairs, targetRank) 
   const pCur = Math.min(1, elapsedMs / dur);
   const isFinished = pCur >= 0.998 && !targetItem.live;
 
-  // 1分刻み・10分刻みのどちらでも正確に時速を算出するため、最低20分窓を確保
+  // 直近1時間時速（最低20分窓を確保）
   const display1hMs = Math.min(3600 * 1000, Math.max(20 * 60 * 1000, elapsedMs * 0.12));
   const sDisplayPrev = interpScoreAtTime(targetGraph, Math.max(st, lastT - display1hMs));
   const recentPace = ((currentScore - sDisplayPrev) / display1hMs) * 3600000;
@@ -526,6 +549,14 @@ function computePredictionServer(targetItem, targetGraph, refPairs, targetRank) 
         }
       }
     }
+  }
+
+  // 終盤6時間以内の急加速モメンタム補正（直近1h時速が6h平均を大きく上回る場合）
+  let accelBoost = 1.0;
+  if (remH <= 6.0 && pace6h > 0 && recentPace > pace6h) {
+    const surgeRatio = recentPace / pace6h;
+    const rankGain = Number(targetRank) <= 1000 ? 0.22 : Number(targetRank) >= 10000 ? 0.18 : 0.04;
+    accelBoost = Math.min(1.24, 1.0 + (surgeRatio - 1.0) * rankGain);
   }
 
   const naiveLinear = pCur > 0.02 ? currentScore / pCur : currentScore;
@@ -607,7 +638,8 @@ function computePredictionServer(targetItem, targetGraph, refPairs, targetRank) 
     }
   }
 
-  const targetFatigue = getChapterFatigueFactor(targetItem);
+  const rawFatigue = getChapterFatigueFactor(targetItem);
+  const targetFatigue = remH <= 6.0 ? 1.0 - (1.0 - rawFatigue) * 0.45 : rawFatigue;
   const wPaceWeight = zoneCfg.wPace;
   const wLevelWeight = 1.0 - wPaceWeight;
 
@@ -634,32 +666,38 @@ function computePredictionServer(targetItem, targetGraph, refPairs, targetRank) 
     const rawRPace = hNormPace > 0 ? normalizedCurPace / hNormPace : rNow;
     const rPace = Math.max(rNow * zoneCfg.clampLo, Math.min(rNow * zoneCfg.clampHi, rawRPace));
 
+    const h1Prev = interpScoreAtTime(graph, Math.max(graph.startTime, hTargetT - display1hMs)) * eraScale;
+    const h1Pace = ((hCur - h1Prev) / display1hMs) * 3600000;
+
     const h6Prev = interpScoreAtTime(graph, Math.max(graph.startTime, hTargetT - win6hMs)) * eraScale;
     const hPace6h = ((hCur - h6Prev) / Math.max(1, win6hMs)) * 3600000;
 
     rNows.push(rNow);
     rPaces.push(rPace);
-    refCalcs.push({ item, graph, monthsAgo, eraScale, rawHCur, rawHFinal, hCur, hFinal, rNow, rPace, hPace6h });
+    refCalcs.push({ item, graph, monthsAgo, eraScale, rawHCur, rawHFinal, hCur, hFinal, rNow, rPace, h1Pace, hPace6h });
   }
 
   const medRNow = calcMedian(rNows);
   const medRPace = calcMedian(rPaces);
   const liveHeat = wLevelWeight * medRNow + wPaceWeight * medRPace;
 
-  const alpha = Number(targetRank) <= 1000 ? 0.08 : 0.07;
-  const clampedHeat = Math.max(0.65, Math.min(2.20, liveHeat));
-  const remDamp = Math.pow(Math.max(0, 1.0 - pCur), 0.75);
+  // 階級別の終盤スパート弾力性（ダイヤ級は0.07を維持、ドリーム・プラチナの終盤スパートを適正化）
+  const alpha = Number(targetRank) <= 1000 ? 0.14 : Number(targetRank) >= 10000 ? 0.14 : 0.07;
+  const clampedHeat = Math.max(0.65, Math.min(2.30, liveHeat));
+  const remDamp = Math.pow(Math.max(0, 1.0 - pCur), 0.65);
   const tierElasticity = Math.pow(clampedHeat, alpha * remDamp);
 
   const gridSteps = 96;
+  const stepDtH = remH / gridSteps;
+  const isNightEnd = targetEndHour >= 1 && targetEndHour <= 6;
   const refModels = [];
 
   for (const rc of refCalcs) {
-    const { item, graph, monthsAgo, eraScale, rawHCur, rawHFinal, hCur, hFinal, rNow, rPace, hPace6h } = rc;
+    const { item, graph, monthsAgo, eraScale, rawHCur, rawHFinal, hCur, hFinal, rNow, rPace, h1Pace, hPace6h } = rc;
     const refFatigue = getChapterFatigueFactor(item);
     const relFatigue = targetFatigue / Math.max(0.5, refFatigue);
     const baseMultiplier = wLevelWeight * rNow + wPaceWeight * rPace;
-    const envMultiplier = weekendEndFactor * resourceFactor * trendFactor * relFatigue;
+    const envMultiplier = weekendEndFactor * resourceFactor * trendFactor * relFatigue * accelBoost;
 
     const stepCurve = [currentScore];
     let accScore = currentScore;
@@ -674,9 +712,36 @@ function computePredictionServer(targetItem, targetGraph, refPairs, targetRank) 
         prevH = hStep;
 
         const remHMid = ((1 - pMid) * dur) / 3600000;
-        const stepElasticity = remHMid <= 4.0 ? tierElasticity : 1.0 + (tierElasticity - 1.0) * 0.25;
+        const elapsedFromNowH = (s - 0.5) * stepDtH;
+        const stepElasticity = remHMid <= 4.5 ? tierElasticity : 1.0 + (tierElasticity - 1.0) * 0.45;
 
-        accScore += dh * baseMultiplier * envMultiplier * stepElasticity;
+        let rawInc = dh * baseMultiplier * envMultiplier * stepElasticity;
+
+        // 終盤6時間以内の予測曲線下限フロアー ＆ 初速の滑らかな接続
+        if (remH <= 6.0 && recentPace > 0) {
+          let floorRatio = 1.0;
+          if (isNightEnd) {
+            floorRatio = 0.70;
+          } else if (remHMid > 3.0) {
+            floorRatio = 0.90;
+          } else if (remHMid > 1.5) {
+            floorRatio = 0.95;
+          } else {
+            floorRatio = 1.00;
+          }
+
+          // 予測開始直後の30分間は現在時速の96%から滑らかに接続
+          if (elapsedFromNowH < 0.5) {
+            const blend = elapsedFromNowH / 0.5;
+            const connRatio = 0.96 * (1.0 - blend) + floorRatio * blend;
+            floorRatio = Math.max(floorRatio, connRatio);
+          }
+
+          const minInc = recentPace * floorRatio * stepDtH;
+          rawInc = Math.max(rawInc, minInc);
+        }
+
+        accScore += rawInc;
         stepCurve.push(accScore);
       }
     }
@@ -703,6 +768,7 @@ function computePredictionServer(targetItem, targetGraph, refPairs, targetRank) 
       hFinal: rawHFinal,
       adjHCur: hCur,
       adjHFinal: hFinal,
+      h1Pace,
       hPace6h,
       impliedFinal,
       stepCurve,
@@ -722,6 +788,7 @@ function computePredictionServer(targetItem, targetGraph, refPairs, targetRank) 
     const rawCentralFinal = refModels.reduce((acc, m) => acc + m.impliedFinal * m.weight, 0) / totalW;
     centralFinal = rawCentralFinal;
 
+    // 緩和版上限キャップ（直近1hペースが上回っている場合はキャップ解除、それ以外は+15%〜+18%まで許容）
     const upperAnchors = refModels
       .filter((m) => m.adjHCur >= currentScore * 0.98)
       .sort((a, b) => a.adjHCur - b.adjHCur);
@@ -729,8 +796,10 @@ function computePredictionServer(targetItem, targetGraph, refPairs, targetRank) 
     let anchorScale = 1.0;
     if (upperAnchors.length > 0) {
       const ua = upperAnchors[0];
-      if (pace6h <= ua.hPace6h * 1.02) {
-        const capVal = ua.adjHFinal * 1.045;
+      const isSurgingPastRef = recentPace > ua.h1Pace * 1.03;
+      if (!isSurgingPastRef && pace6h <= ua.hPace6h * 1.02) {
+        const capMargin = liveHeat > 1.05 ? 1.18 : 1.15;
+        const capVal = ua.adjHFinal * capMargin;
         if (centralFinal > capVal) {
           const rawGain = rawCentralFinal - currentScore;
           const cappedGain = Math.max(0, capVal - currentScore);
