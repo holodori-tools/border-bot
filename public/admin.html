@@ -228,9 +228,9 @@
         <button class="primary" onclick="openGraphApi(1000)">T1,000（ドリーム級）</button>
         <button class="primary" onclick="openGraphApi(5000)">T5,000（ダイヤ級）</button>
         <button class="primary" onclick="openGraphApi(10000)">T10,000（プラチナ級）</button>
-        <button onclick="openGraphApi(100)">T100</button>
-        <button onclick="openGraphApi(500)">T500</button>
-        <button onclick="openGraphApi(50000)">T50,000</button>
+        <button class="primary" onclick="openGraphApi(100)">T100</button>
+        <button class="primary" onclick="openGraphApi(500)">T500</button>
+        <button class="primary" onclick="openGraphApi(50000)">T50,000</button>
         <button class="ok" onclick="readClipboardNow(false)">📋 クリップボードから手動読込</button>
       </div>
       <div id="cachedRanksInfo" style="margin-top:8px;font-size:12px;color:var(--muted);"></div>
@@ -249,7 +249,7 @@
       <div class="row">
         <label style="font-weight:700;">画像レイアウト:</label>
         <select id="modeSelect" onchange="onModeOrThemeChanged()">
-          <option value="triple" selected>トリプル（3枠横並び / 2160×760 ワイド）</option>
+          <option value="triple" selected>トリプル（3枠横並び / 2160×820 ワイド）</option>
           <option value="dual">デュアル（2枠比較 / 1600×900）</option>
           <option value="single">シングル（1枠詳細 / 1600×900）</option>
         </select>
@@ -300,7 +300,7 @@
             ▼ BorderPrediction（添付画像プレビュー・この画像がそのまま送信されます）
           </div>
           <div class="preview-img-wrap">
-            <canvas id="reportCanvas" width="2160" height="760"></canvas>
+            <canvas id="reportCanvas" width="2160" height="820"></canvas>
           </div>
         </div>
         <div>
@@ -379,7 +379,7 @@
       return null;
     }
 
-// =========================================================================
+    // =========================================================================
     // 1. 認証 ＆ サーバー通信
     // =========================================================================
     async function apiFetch(url, options = {}) {
@@ -442,7 +442,7 @@
       }
     }
     window.doLogin = doLogin;
-    
+
     async function initializeApp() {
       await Promise.all([loadArchiveFromGithub(false), loadServerBootstrap()]);
       rebuildCombinedItems();
@@ -750,7 +750,7 @@
       }
     }
 
-// =========================================================================
+    // =========================================================================
     // 4. NowBorder テキスト自動生成（5分丸め ＋ 万単位四捨五入）
     // =========================================================================
     function formatRoundedJstTime(ms) {
@@ -830,17 +830,20 @@
       const lines = [];
       for (const tier of TIER_DEFS) {
         const pred = getPredictionFor(targetKey, tier.rank);
-        if (pred && Array.isArray(pred.diagTags)) {
-          lines.push(`・${tier.label}(T${tier.rank.toLocaleString()}): ${pred.diagTags.join(" / ")}`);
+        if (pred && pred.metaInfo) {
+          const m = pred.metaInfo;
+          lines.push(
+            `・${tier.label}(T${tier.rank.toLocaleString()}): ${m.zoneLabel} / 時速重み${m.wPacePct}% / 勢い係数${m.liveHeat.toFixed(2)}x`
+          );
         } else {
           lines.push(`・${tier.label}(T${tier.rank.toLocaleString()}): データ未取得`);
         }
       }
-      diagEl.innerHTML = `<strong>▼ v5 キャリブレーション診断タグ（管理画面確認用）</strong><br>${lines.join("<br>")}`;
+      diagEl.innerHTML = `<strong>▼ v5 キャリブレーション診断ログ（管理画面確認用）</strong><br>${lines.join("<br>")}`;
     }
 
     // =========================================================================
-    // 5. 着地予測モデル（v5 キャリブレーション版：JST 5区分ゾーン制御・区間積算・上限アンカー）
+    // 5. 着地予測モデル（v5 キャリブレーション版：終盤下限フロアー幅制御・初速接続）
     // =========================================================================
     function calcMedian(values) {
       if (!values || values.length === 0) return 1.0;
@@ -883,17 +886,16 @@
     }
 
     function getJstDayOfWeek(ms) {
-      // 0:日曜, 1:月曜, ..., 6:土曜
       return new Date(ms + 9 * 3600 * 1000).getUTCDay();
     }
 
     function getJstHourActivityFactor(ms) {
       const h = getJstHour(ms);
       const table = [
-        0.55, 0.35, 0.22, 0.16, 0.15, 0.20, // 00-05時
-        0.35, 0.55, 0.65, 0.65, 0.70, 0.75, // 06-11時
-        0.85, 0.80, 0.80, 0.85, 0.90, 1.00, // 12-17時
-        1.10, 1.20, 1.35, 1.40, 1.25, 0.90  // 18-23時
+        0.55, 0.35, 0.22, 0.16, 0.15, 0.20,
+        0.35, 0.55, 0.65, 0.65, 0.70, 0.75,
+        0.85, 0.80, 0.80, 0.85, 0.90, 1.00,
+        1.10, 1.20, 1.35, 1.40, 1.25, 0.90
       ];
       return table[h] || 1.0;
     }
@@ -916,7 +918,7 @@
       if (ch <= 1) return 1.00;
       if (ch === 2) return 0.99;
       if (ch === 3) return 0.975;
-      return 0.955; // Ch.4以降の連戦疲労減衰
+      return 0.955;
     }
 
     function getJstTimeZoneConfig(lastT, remH, pCur) {
@@ -1055,8 +1057,8 @@
       const weekendEndFactor = targetEndDay === 0 && targetEndHour >= 17 ? 1.015 : 1.0;
 
       let resourceFactor = 1.0;
-      if (Array.isArray(state.rawEvents) && state.rawEvents.length > 0) {
-        const priorEvents = state.rawEvents
+      if (Array.isArray(state.events) && state.events.length > 0) {
+        const priorEvents = state.events
           .filter((ev) => ev.endTime && ev.endTime <= st + 3600000 && ev.eventId !== targetItem.eventId)
           .sort((a, b) => b.endTime - a.endTime);
 
@@ -1342,7 +1344,7 @@
     }
 
     // =========================================================================
-    // 6. 高解像度 Canvas 描画（トリプル: 2160×760 / デュアル・シングル: 1600×900）
+    // 6. 高解像度 Canvas 描画（トリプル: 2160×820 / デュアル・シングル: 1600×900）
     // =========================================================================
     function getTierRankTitle(rank) {
       const r = Number(rank);
@@ -1456,7 +1458,7 @@
       ctx.fillText(str + "…", x, y);
     }
 
-let syncPredictionTimer = null;
+    let syncPredictionTimer = null;
 
     async function canvasToOptimizedBlob(canvas) {
       const pngBlob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
@@ -1506,7 +1508,6 @@ let syncPredictionTimer = null;
         canvas.height = 900;
         drawMultiCards(canvas, state.dual);
       } else {
-        // トリプル（デフォルト）: 上部共通タイトルバー付き 2160 × 820
         canvas.width = 2160;
         canvas.height = 820;
         drawMultiCards(canvas, state.triple);
@@ -1892,7 +1893,6 @@ let syncPredictionTimer = null;
       const marginX = 32;
       const gapX = 24;
 
-      // 先頭スロットのイベント情報を上部共通タイトルバーに表示
       const primaryItem =
         state.eligibleItems.find((x) => x.key === slots[0]?.key) ||
         state.eligibleItems.find((x) => x.key === state.selectedKey);
@@ -2030,7 +2030,6 @@ let syncPredictionTimer = null;
 
       const pad = 26;
 
-      // 枠内ヘッダー：階級名と順位バッジのみ表示
       ctx.save();
       ctx.font = "800 30px sans-serif";
       ctx.fillStyle = theme.primary;
@@ -2118,341 +2117,6 @@ let syncPredictionTimer = null;
       }
 
       const gridY = heroY + heroH + 14;
-      const colW = (w - pad * 2 - 14) / 2;
-      const cellH = 44;
-      const subCells = [
-        { k: "現在スコア", v: `${formatNumber(pred.currentScore)} pt`, cx: x + pad, cy: gridY },
-        {
-          k: "経過 / 進捗",
-          v: `${pred.elapsedH.toFixed(1)}h / ${pred.totalH.toFixed(0)}h (${(pred.pCur * 100).toFixed(1)}%)`,
-          cx: x + pad + colW + 14,
-          cy: gridY,
-        },
-        { k: "直近時速", v: `${formatNumber(pred.recentPace)} pt/h`, cx: x + pad, cy: gridY + cellH + 8 },
-        {
-          k: "残り予測増分",
-          v: pred.isFinished ? "0 pt" : `+${formatNumber(Math.max(0, pred.centralFinal - pred.currentScore))} pt`,
-          cx: x + pad + colW + 14,
-          cy: gridY + cellH + 8,
-        },
-      ];
-
-      for (const cell of subCells) {
-        ctx.save();
-        drawRoundRect(ctx, cell.cx, cell.cy, colW, cellH, 8);
-        ctx.fillStyle = "rgba(255, 255, 255, 0.06)";
-        ctx.fill();
-        ctx.restore();
-
-        ctx.fillStyle = "rgba(255, 255, 255, 0.64)";
-        ctx.font = "600 14px sans-serif";
-        ctx.fillText(cell.k, cell.cx + 12, cell.cy + 27);
-
-        ctx.fillStyle = "#ffffff";
-        ctx.font = "700 15px monospace";
-        ctx.textAlign = "right";
-        ctx.fillText(cell.v, cell.cx + colW - 12, cell.cy + 27);
-        ctx.textAlign = "left";
-      }
-
-      const topSplitY = gridY + cellH * 2 + 20;
-      ctx.strokeStyle = "rgba(255, 255, 255, 0.16)";
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(x + pad, topSplitY);
-      ctx.lineTo(x + w - pad, topSplitY);
-      ctx.stroke();
-
-      const gBoxX = x + pad;
-      const gBoxY = topSplitY + 10;
-      const gBoxW = w - pad * 2;
-      const gBoxH = y + h - 20 - gBoxY;
-
-      ctx.save();
-      drawRoundRect(ctx, gBoxX, gBoxY, gBoxW, gBoxH, 12);
-      ctx.fillStyle = "rgba(0, 0, 0, 0.36)";
-      ctx.fill();
-      ctx.lineWidth = 1.2;
-      ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
-      ctx.stroke();
-      ctx.restore();
-
-      ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
-      ctx.font = "700 15px sans-serif";
-      ctx.fillText("推移実績 & 着地予測レンジ", gBoxX + 16, gBoxY + 26);
-
-      ctx.fillStyle = "rgba(255, 255, 255, 0.58)";
-      ctx.font = "600 13px monospace";
-      ctx.textAlign = "right";
-      ctx.fillText(`基準: ${formatJST(pred.lastT)}`, gBoxX + gBoxW - 16, gBoxY + 26);
-      ctx.textAlign = "left";
-
-      const gPadL = 68, gPadR = 18, gPadT = 40, gPadB = 32;
-      const plotX = gBoxX + gPadL;
-      const plotY = gBoxY + gPadT;
-      const plotW = gBoxW - gPadL - gPadR;
-      const plotH = gBoxH - gPadT - gPadB;
-
-      let maxY = Math.max(pred.maxFinal, pred.currentScore);
-      for (const m of pred.refModels.slice(0, 3)) maxY = Math.max(maxY, m.hFinal);
-      maxY = Math.ceil((maxY * 1.06) / 100000) * 100000 || 500000;
-
-      const xOf = (p) => plotX + Math.max(0, Math.min(1, p)) * plotW;
-      const yOf = (v) => plotY + plotH - (Math.max(0, v) / maxY) * plotH;
-
-      ctx.font = "600 13px monospace";
-      ctx.textAlign = "right";
-      for (let i = 0; i <= 4; i++) {
-        const val = (maxY * i) / 4;
-        const gy = yOf(val);
-        ctx.strokeStyle = "rgba(255, 255, 255, 0.10)";
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(plotX, gy);
-        ctx.lineTo(plotX + plotW, gy);
-        ctx.stroke();
-
-        ctx.fillStyle = "rgba(255, 255, 255, 0.68)";
-        const lbl = val >= 10000 ? `${(val / 10000).toFixed(0)}万` : formatNumber(val);
-        ctx.fillText(lbl, plotX - 10, gy + 4);
-      }
-
-      ctx.textAlign = "center";
-      const stepH = pred.totalH <= 48 ? 12 : 24;
-      for (let hr = 0; hr <= pred.totalH; hr += stepH) {
-        const gx = xOf(hr / pred.totalH);
-        ctx.strokeStyle = "rgba(255, 255, 255, 0.07)";
-        ctx.beginPath();
-        ctx.moveTo(gx, plotY);
-        ctx.lineTo(gx, plotY + plotH);
-        ctx.stroke();
-
-        ctx.fillStyle = "rgba(255, 255, 255, 0.68)";
-        ctx.fillText(`${hr}h`, gx, plotY + plotH + 20);
-      }
-      ctx.textAlign = "left";
-
-      pred.refModels.slice(0, 2).forEach((m) => {
-        const g = m.graph;
-        const dur = g.endTime - g.startTime;
-        ctx.save();
-        ctx.strokeStyle = "rgba(255, 255, 255, 0.22)";
-        ctx.lineWidth = 1.4;
-        ctx.beginPath();
-        const step = Math.max(1, Math.floor(g.tier.length / 120));
-        for (let i = 0; i < g.tier.length; i += step) {
-          const [t, v] = g.tier[i];
-          const px = xOf((t - g.startTime) / dur);
-          const py = yOf(v);
-          if (i === 0) ctx.moveTo(px, py);
-          else ctx.lineTo(px, py);
-        }
-        ctx.stroke();
-        ctx.restore();
-      });
-
-      if (!pred.isFinished && pred.forecastSeries.length > 1) {
-        ctx.save();
-        ctx.fillStyle = theme.bandFill;
-        ctx.beginPath();
-        pred.forecastSeries.forEach((pt, i) => {
-          const px = xOf(pt.p);
-          const py = yOf(pt.max);
-          if (i === 0) ctx.moveTo(px, py);
-          else ctx.lineTo(px, py);
-        });
-        for (let i = pred.forecastSeries.length - 1; i >= 0; i--) {
-          const pt = pred.forecastSeries[i];
-          ctx.lineTo(xOf(pt.p), yOf(pt.min));
-        }
-        ctx.closePath();
-        ctx.fill();
-
-        ctx.setLineDash([7, 5]);
-        ctx.lineWidth = 3.2;
-        ctx.strokeStyle = theme.forecast;
-        if (theme.sparkle) {
-          ctx.shadowColor = theme.glowColor;
-          ctx.shadowBlur = 10;
-        }
-        ctx.beginPath();
-        pred.forecastSeries.forEach((pt, i) => {
-          const px = xOf(pt.p);
-          const py = yOf(pt.central);
-          if (i === 0) ctx.moveTo(px, py);
-          else ctx.lineTo(px, py);
-        });
-        ctx.stroke();
-        ctx.restore();
-      }
-
-      const tPts = pred.targetGraph.tier;
-      const tDur = pred.targetGraph.endTime - pred.targetGraph.startTime;
-      ctx.save();
-      if (theme.rainbow) {
-        const lineGrad = ctx.createLinearGradient(plotX, 0, plotX + plotW, 0);
-        lineGrad.addColorStop(0, "#ff4d6d");
-        lineGrad.addColorStop(0.3, "#ffb703");
-        lineGrad.addColorStop(0.6, "#06d6a0");
-        lineGrad.addColorStop(1, "#3a86ff");
-        ctx.strokeStyle = lineGrad;
-      } else {
-        ctx.strokeStyle = theme.accent;
-      }
-      ctx.lineWidth = 3.8;
-      if (theme.sparkle) {
-        ctx.shadowColor = theme.glowColor;
-        ctx.shadowBlur = 12;
-      }
-      ctx.beginPath();
-      const step = Math.max(1, Math.floor(tPts.length / 180));
-      for (let i = 0; i < tPts.length; i += step) {
-        const [t, v] = tPts[i];
-        const px = xOf((t - pred.targetGraph.startTime) / tDur);
-        const py = yOf(v);
-        if (i === 0) ctx.moveTo(px, py);
-        else ctx.lineTo(px, py);
-      }
-      const [lt, lv] = tPts[tPts.length - 1];
-      const lx = xOf((lt - pred.targetGraph.startTime) / tDur);
-      const ly = yOf(lv);
-      ctx.lineTo(lx, ly);
-      ctx.stroke();
-
-      ctx.fillStyle = "#ffffff";
-      ctx.beginPath();
-      ctx.arc(lx, ly, 5.5, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-
-      const endY = yOf(pred.centralFinal);
-      ctx.save();
-      ctx.fillStyle = theme.forecast;
-      ctx.beginPath();
-      ctx.arc(xOf(1), endY, 5.5, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-    }
-
-      const borderGrad = ctx.createLinearGradient(x, y, x + w, y + h);
-      theme.borderStops.forEach((c, idx) => {
-        borderGrad.addColorStop(idx / Math.max(1, theme.borderStops.length - 1), c);
-      });
-      ctx.save();
-      drawRoundRect(ctx, x, y, w, h, 18);
-      ctx.lineWidth = 4.5;
-      ctx.strokeStyle = borderGrad;
-      if (theme.sparkle) {
-        ctx.shadowColor = theme.glowColor;
-        ctx.shadowBlur = 20;
-      }
-      ctx.stroke();
-      ctx.restore();
-
-      const pad = 26;
-      const badgeW = rankTitle ? 196 : 148;
-      const badgeH = 44;
-      const badgeX = x + w - pad - badgeW;
-      const badgeY = y + 44;
-      const badgeLabel = rankTitle ? `${rankTitle} / T${rank.toLocaleString()}` : `T${rank.toLocaleString()}`;
-
-      if (!pred) {
-        const titleStr = meta.item ? meta.item.shortLabel : "未選択";
-        ctx.fillStyle = theme.primary;
-        ctx.font = "800 30px sans-serif";
-        drawFittedText(ctx, `${titleStr} (${badgeLabel})`, x + pad, y + 66, w - pad * 2);
-
-        ctx.fillStyle = "rgba(255, 255, 255, 0.65)";
-        ctx.font = "600 17px sans-serif";
-        ctx.fillText("このイベント・順位のJSONデータが未取得です。", x + pad, y + 120);
-        ctx.fillText("上のボタンからAPIデータをコピーしてください。", x + pad, y + 152);
-        return;
-      }
-
-      ctx.fillStyle = "rgba(255, 255, 255, 0.68)";
-      ctx.font = "600 15px sans-serif";
-      drawFittedText(
-        ctx,
-        `${pred.targetItem.catLabel} ｜ ${formatJST(pred.targetItem.startTime)} 〜 ${formatJST(pred.targetItem.endTime)}`,
-        x + pad,
-        y + 32,
-        w - pad * 2
-      );
-
-      ctx.save();
-      ctx.font = "800 32px sans-serif";
-      ctx.fillStyle = theme.primary;
-      if (theme.sparkle) {
-        ctx.shadowColor = theme.glowColor;
-        ctx.shadowBlur = 14;
-      }
-      drawFittedText(ctx, pred.targetItem.shortLabel, x + pad, y + 78, w - pad * 2 - badgeW - 14);
-      ctx.restore();
-
-      ctx.save();
-      drawRoundRect(ctx, badgeX, badgeY, badgeW, badgeH, 10);
-      ctx.fillStyle = "rgba(255, 255, 255, 0.11)";
-      ctx.fill();
-      ctx.lineWidth = 2.2;
-      ctx.strokeStyle = borderGrad;
-      ctx.stroke();
-      ctx.fillStyle = theme.primary;
-      ctx.font = "800 20px sans-serif";
-      ctx.textAlign = "center";
-      ctx.fillText(badgeLabel, badgeX + badgeW / 2, badgeY + 29);
-      ctx.restore();
-
-      const heroX = x + pad;
-      const heroY = y + 102;
-      const heroW = w - pad * 2;
-      const heroH = 122;
-      ctx.save();
-      drawRoundRect(ctx, heroX, heroY, heroW, heroH, 12);
-      ctx.fillStyle = "rgba(0, 0, 0, 0.36)";
-      ctx.fill();
-      ctx.lineWidth = 1.2;
-      ctx.strokeStyle = "rgba(255, 255, 255, 0.16)";
-      ctx.stroke();
-      ctx.restore();
-
-      ctx.fillStyle = "rgba(255, 255, 255, 0.74)";
-      ctx.font = "700 15px sans-serif";
-      ctx.fillText(pred.isFinished ? "最終確定ボーダー" : "最終着地予測ボーダー（本命）", heroX + 18, heroY + 28);
-
-      ctx.save();
-      ctx.font = "800 44px monospace";
-      if (theme.rainbow) {
-        const txtGrad = ctx.createLinearGradient(heroX + 18, 0, heroX + 380, 0);
-        txtGrad.addColorStop(0, "#ff758f");
-        txtGrad.addColorStop(0.35, "#ffd166");
-        txtGrad.addColorStop(0.7, "#06d6a0");
-        txtGrad.addColorStop(1, "#60a5fa");
-        ctx.fillStyle = txtGrad;
-      } else {
-        ctx.fillStyle = theme.forecast;
-      }
-      if (theme.sparkle) {
-        ctx.shadowColor = theme.glowColor;
-        ctx.shadowBlur = 16;
-      }
-      ctx.fillText(`${formatNumber(pred.centralFinal)} pt`, heroX + 18, heroY + 76);
-      ctx.restore();
-
-      if (!pred.isFinished) {
-        ctx.fillStyle = theme.accent;
-        ctx.font = "700 16px monospace";
-        ctx.fillText(
-          `誤差目安: ±${formatNumber(pred.halfSpread)} pt  (${formatNumber(pred.minFinal)} 〜 ${formatNumber(pred.maxFinal)})`,
-          heroX + 18,
-          heroY + 106
-        );
-      } else {
-        ctx.fillStyle = theme.accent;
-        ctx.font = "700 16px sans-serif";
-        ctx.fillText("イベント終了・確定スコア", heroX + 18, heroY + 106);
-      }
-
-      const gridY = y + 238;
       const colW = (w - pad * 2 - 14) / 2;
       const cellH = 44;
       const subCells = [
@@ -2838,7 +2502,7 @@ let syncPredictionTimer = null;
         btnDataOnly.textContent = "🔄 データのみ更新（通知は送信しない）";
       }
     }
-    
+
     if (adminPassword) {
       document.getElementById("loginOverlay").style.display = "none";
       initializeApp();
