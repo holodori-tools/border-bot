@@ -729,6 +729,24 @@ function computePredictionServer(targetItem, targetGraph, refPairs, targetRank, 
   const sDisplayPrev = interpScoreAtTime(targetGraph, Math.max(st, lastT - display1hMs));
   const recentPace = ((currentScore - sDisplayPrev) / display1hMs) * 3600000;
 
+  // 最終2時間以内用：直近10分速（pt/h換算）
+  const win10mMs = Math.min(elapsedMs * 0.5, 10 * 60 * 1000);
+  const s10mPrev = interpScoreAtTime(targetGraph, Math.max(st, lastT - win10mMs));
+  const pace10m = win10mMs > 0 ? ((currentScore - s10mPrev) / win10mMs) * 3600000 : recentPace;
+
+  // 残り時間に応じた10分速ブレンド重み（2.0h超は0%、2.0h→0.5hで35%→85%へ滑らかに移行）
+  let w10m = 0;
+  if (!isFinished && remH <= 2.0) {
+    if (remH > 1.0) {
+      w10m = 0.35 + (2.0 - remH) * 0.25; // 0.35 -> 0.60
+    } else if (remH > 0.5) {
+      w10m = 0.60 + (1.0 - remH) * 0.40; // 0.60 -> 0.80
+    } else {
+      w10m = 0.85;
+    }
+  }
+  const effectiveDisplayPace = w10m > 0 ? recentPace * (1 - w10m) + pace10m * w10m : recentPace;
+
   const zoneCfg = getJstTimeZoneConfig(lastT, remH, pCur);
   const zoneWinMs = Math.min(elapsedMs * 0.85, Math.max(20 * 60 * 1000, zoneCfg.winH * 3600 * 1000));
   const sZonePrev = interpScoreAtTime(targetGraph, Math.max(st, lastT - zoneWinMs));
@@ -759,8 +777,8 @@ function computePredictionServer(targetItem, targetGraph, refPairs, targetRank, 
   }
 
   let accelBoost = 1.0;
-  if (remH <= 6.0 && pace6h > 0 && recentPace > pace6h) {
-    const surgeRatio = recentPace / pace6h;
+  if (remH <= 6.0 && pace6h > 0 && effectiveDisplayPace > pace6h) {
+    const surgeRatio = effectiveDisplayPace / pace6h;
     const rankGain = Number(targetRank) <= 1000 ? 0.22 : Number(targetRank) >= 10000 ? 0.18 : 0.04;
     accelBoost = Math.min(1.24, 1.0 + (surgeRatio - 1.0) * rankGain);
   }
@@ -870,7 +888,18 @@ function computePredictionServer(targetItem, targetGraph, refPairs, targetRank, 
     const hActivity = getWindowAvgJstActivity(graph, hTargetT, zoneWinMs);
     const hNormPace = hRecentPace / hActivity;
     const rawRPace = hNormPace > 0 ? normalizedCurPace / hNormPace : rNow;
-    const rPace = Math.max(rNow * zoneCfg.clampLo, Math.min(rNow * zoneCfg.clampHi, rawRPace));
+    const rPace45m = Math.max(rNow * zoneCfg.clampLo, Math.min(rNow * zoneCfg.clampHi, rawRPace));
+
+    // 過去データの同時点10分速と照合
+    let rPace = rPace45m;
+    if (w10m > 0) {
+      const hWin10mMs = Math.min((hTargetT - graph.startTime) * 0.5, win10mMs * (gDur / Math.max(1, dur)));
+      const h10mPrev = interpScoreAtTime(graph, Math.max(graph.startTime, hTargetT - hWin10mMs)) * eraScale;
+      const hPace10m = hWin10mMs > 0 ? ((hCur - h10mPrev) / hWin10mMs) * 3600000 : hRecentPace;
+      const rawRPace10m = hPace10m > 0 ? pace10m / hPace10m : rPace45m;
+      const rPace10m = Math.max(rNow * 0.65, Math.min(rNow * 1.85, rawRPace10m));
+      rPace = (1 - w10m) * rPace45m + w10m * rPace10m;
+    }
 
     const h1Prev = interpScoreAtTime(graph, Math.max(graph.startTime, hTargetT - display1hMs)) * eraScale;
     const h1Pace = ((hCur - h1Prev) / display1hMs) * 3600000;
@@ -895,13 +924,14 @@ function computePredictionServer(targetItem, targetGraph, refPairs, targetRank, 
   const gridSteps = 96;
   const stepDtH = remH / gridSteps;
   const isNightEnd = targetEndHour >= 1 && targetEndHour <= 6;
+  const floorBasePace = remH <= 2.0 ? Math.max(recentPace, effectiveDisplayPace) : recentPace;
   const maxAllowedPace = calcHistoricalPaceLimit(
     targetGraph,
     eraAdjustedRefs,
     currentScore,
     elapsedMs,
     remH,
-    recentPace
+    floorBasePace
   );
   const refModels = [];
 
@@ -930,7 +960,7 @@ function computePredictionServer(targetItem, targetGraph, refPairs, targetRank, 
 
         let rawInc = dh * baseMultiplier * envMultiplier * stepElasticity;
 
-        if (remH <= 6.0 && recentPace > 0) {
+        if (remH <= 6.0 && floorBasePace > 0) {
           let floorRatio = 1.0;
           if (isNightEnd) {
             floorRatio = 0.70;
@@ -948,7 +978,7 @@ function computePredictionServer(targetItem, targetGraph, refPairs, targetRank, 
             floorRatio = Math.max(floorRatio, connRatio);
           }
 
-          const minInc = recentPace * floorRatio * stepDtH;
+          const minInc = floorBasePace * floorRatio * stepDtH;
           rawInc = Math.max(rawInc, minInc);
         }
 
@@ -1010,7 +1040,7 @@ function computePredictionServer(targetItem, targetGraph, refPairs, targetRank, 
     let anchorScale = 1.0;
     if (upperAnchors.length > 0) {
       const ua = upperAnchors[0];
-      const isSurgingPastRef = recentPace > ua.h1Pace * 1.03;
+      const isSurgingPastRef = effectiveDisplayPace > ua.h1Pace * 1.03;
       if (!isSurgingPastRef && pace6h <= ua.hPace6h * 1.02) {
         const capMargin = liveHeat > 1.05 ? 1.18 : 1.15;
         const capVal = ua.adjHFinal * capMargin;
@@ -1076,7 +1106,7 @@ function computePredictionServer(targetItem, targetGraph, refPairs, targetRank, 
       totalH: dur / 3600000,
       pCur,
       isFinished,
-      recentPace,
+      recentPace: effectiveDisplayPace,
       centralFinal,
       minFinal,
       maxFinal,
@@ -2369,51 +2399,81 @@ app.post("/api/admin/cache-prediction", requireAdmin, upload.single("image"), as
   res.json({ ok: true, timeLabel });
 });
 
-// 一斉通知送信 ＆ データのみ更新（notify === "false"）両対応
+async function saveAdminCachePayload(req, imageBuffer, filename) {
+  const now = Date.now();
+  const nowBorderText = String(req.body?.nowBorderText || "").trim();
+  const eventKey = String(req.body?.eventKey || "").trim();
+
+  memStore.lastManualUpdateAt = now;
+  await persistMeta();
+
+  if (eventKey && req.body?.manualAdjustments) {
+    try {
+      const parsedAdj = JSON.parse(req.body.manualAdjustments);
+      memStore.manualAdjustments[eventKey] = parsedAdj;
+      await saveRedisJson("borderbot:adjustments", memStore.manualAdjustments);
+    } catch (_) {}
+  }
+
+  if (nowBorderText) {
+    const m = /最終更新\(([^)]+)\)/.exec(nowBorderText);
+    const timeLabel = m ? m[1] : formatRoundedJstTime(now);
+    memStore.nowBorderCache = {
+      text: nowBorderText,
+      timeLabel,
+      updatedAt: now,
+    };
+    await saveRedisJson("borderbot:cache:nowborder", memStore.nowBorderCache);
+  }
+
+  if (imageBuffer) {
+    const m = /最終更新\(([^)]+)\)/.exec(nowBorderText);
+    const timeLabel = m ? m[1] : formatRoundedJstTime(now);
+    memStore.predictionCache = {
+      imageBase64: imageBuffer.toString("base64"),
+      filename,
+      timeLabel,
+      updatedAt: now,
+    };
+    await saveRedisJson("borderbot:cache:prediction", memStore.predictionCache);
+  }
+
+  return { now, nowBorderText };
+}
+
+// データのみ更新専用エンドポイント（絶対にDiscord通知を送信しない）
+app.post("/api/admin/update-cache", requireAdmin, upload.single("image"), async (req, res) => {
+  try {
+    const imageBuffer = req.file ? req.file.buffer : null;
+    const filename = req.file?.originalname || "border_prediction.png";
+    await saveAdminCachePayload(req, imageBuffer, filename);
+    return res.json({
+      ok: true,
+      message: "✅ データを新しく更新しました（Discordへの一斉通知は送信していません）。",
+    });
+  } catch (err) {
+    console.error("[UpdateCache] エラー:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// 一斉通知送信エンドポイント（notify === "true" の場合のみ送信）
 app.post("/api/admin/broadcast", requireAdmin, upload.single("image"), async (req, res) => {
   try {
-    const nowBorderText = (req.body.nowBorderText || "").trim();
-    const customText = (req.body.customText || "").trim();
-    const customTextPosition = req.body.customTextPosition || "below";
-    const shouldNotify = String(req.body.notify || "true") !== "false";
-    const respectMuteTime = String(req.body.respectMuteTime || "false") === "true";
+    const customText = String(req.body?.customText || "").trim();
+    const customTextPosition = req.body?.customTextPosition || "below";
+    const shouldNotify = req.body?.notify === "true";
+    const respectMuteTime = req.body?.respectMuteTime === "true";
     const imageBuffer = req.file ? req.file.buffer : null;
     const filename = req.file?.originalname || "border_prediction.png";
 
-    const now = Date.now();
-    memStore.lastManualUpdateAt = now;
-    await persistMeta();
+    const { now, nowBorderText } = await saveAdminCachePayload(req, imageBuffer, filename);
 
-    const eventKey = (req.body.eventKey || "").trim();
-    if (eventKey && req.body.manualAdjustments) {
-      try {
-        const parsedAdj = JSON.parse(req.body.manualAdjustments);
-        memStore.manualAdjustments[eventKey] = parsedAdj;
-        await saveRedisJson("borderbot:adjustments", memStore.manualAdjustments);
-      } catch (_) {}
-    }
-
-    if (nowBorderText) {
-      const m = /最終更新\(([^)]+)\)/.exec(nowBorderText);
-      const timeLabel = m ? m[1] : formatRoundedJstTime(now);
-      memStore.nowBorderCache = {
-        text: nowBorderText,
-        timeLabel,
-        updatedAt: now,
-      };
-      await saveRedisJson("borderbot:cache:nowborder", memStore.nowBorderCache);
-    }
-
-    if (imageBuffer) {
-      const m = /最終更新\(([^)]+)\)/.exec(nowBorderText);
-      const timeLabel = m ? m[1] : formatRoundedJstTime(now);
-      memStore.predictionCache = {
-        imageBase64: imageBuffer.toString("base64"),
-        filename,
-        timeLabel,
-        updatedAt: now,
-      };
-      await saveRedisJson("borderbot:cache:prediction", memStore.predictionCache);
+    if (!shouldNotify) {
+      return res.json({
+        ok: true,
+        message: "✅ データを新しく更新しました（Discordへの一斉通知は送信していません）。",
+      });
     }
 
     const subs = normalizeSubscriptions(memStore.subscriptions);
