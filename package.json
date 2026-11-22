@@ -1,7 +1,7 @@
 {
   "name": "holodori-border-bot",
   "version": "2.0.0",
-  "description": "Event border prediction Discord bot with automated API polling",
+  "description": "Event border prediction Discord bot",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js"
