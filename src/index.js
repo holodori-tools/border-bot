@@ -114,6 +114,7 @@ const memStore = {
   archiveItems: [],
   archiveGraphs: {},
   subscriptions: [],
+  manualAdjustments: {},    // { [eventKey]: { "1000": -50000, "5000": 0, ... } }
   nowBorderCache: null,     // { text, timeLabel, updatedAt }
   predictionCache: null,    // { imageBase64, filename, timeLabel, updatedAt }
   lastManualUpdateAt: 0,    // 手動更新の最終タイムスタンプ（10分優先制御用）
@@ -162,13 +163,14 @@ async function saveRedisJson(key, value) {
 }
 
 async function loadStateFromRedis() {
-  const [evRaw, grRaw, subRaw, nbRaw, prRaw, metaRaw] = await Promise.all([
+  const [evRaw, grRaw, subRaw, nbRaw, prRaw, metaRaw, adjRaw] = await Promise.all([
     redisCommand(["GET", "borderbot:events"]),
     redisCommand(["GET", "borderbot:graphs"]),
     redisCommand(["GET", "borderbot:subscriptions"]),
     redisCommand(["GET", "borderbot:cache:nowborder"]),
     redisCommand(["GET", "borderbot:cache:prediction"]),
     redisCommand(["GET", "borderbot:meta"]),
+    redisCommand(["GET", "borderbot:adjustments"]),
   ]);
 
   if (evRaw) {
@@ -206,6 +208,12 @@ async function loadStateFromRedis() {
       memStore.lastManualUpdateAt = Number(meta.lastManualUpdateAt) || 0;
       memStore.lastAutoFetchAt = Number(meta.lastAutoFetchAt) || 0;
       memStore.lastExecutedSlot = String(meta.lastExecutedSlot || "");
+    } catch (_) {}
+  }
+  if (adjRaw) {
+    try {
+      const parsedAdj = JSON.parse(adjRaw);
+      memStore.manualAdjustments = parsedAdj && typeof parsedAdj === "object" ? parsedAdj : {};
     } catch (_) {}
   }
 }
@@ -503,7 +511,113 @@ function getJstTimeZoneConfig(lastT, remH, pCur) {
   return zone;
 }
 
-function computePredictionServer(targetItem, targetGraph, refPairs, targetRank) {
+function calcHistoricalPaceLimit(targetGraph, eraAdjustedRefs, currentScore, elapsedMs, remH, recentPace) {
+  if (!eraAdjustedRefs || eraAdjustedRefs.length === 0 || remH <= 0) {
+    return Infinity;
+  }
+  const st = targetGraph.startTime;
+  const et = targetGraph.endTime;
+  const dur = et - st;
+  const lastT = st + elapsedMs;
+  const pCur = Math.min(1, elapsedMs / dur);
+
+  // 1. 過去イベントにおける「残り同等時間（remH）」での歴代最高平均時速
+  let maxHistRemPace = 0;
+  for (const rObj of eraAdjustedRefs) {
+    const g = rObj.graph;
+    const gDur = g.endTime - g.startTime;
+    const gCur = interpScoreAtProgress(g, pCur) * rObj.eraScale;
+    const gFinal = g.tier[g.tier.length - 1][1] * rObj.eraScale;
+    const gRemH = Math.max(0.1, (1 - pCur) * (gDur / 3600000));
+    const gRemPace = Math.max(0, (gFinal - gCur) / gRemH);
+    if (gRemPace > maxHistRemPace) maxHistRemPace = gRemPace;
+  }
+  if (maxHistRemPace <= 0) return Infinity;
+
+  // 2. 例外判定：開始〜現在までの各区間で、過去イベント並み〜それ以上のハイペースを維持してきたか
+  const checkpoints = [0.25, 0.50, 0.75, 1.0];
+  let sustainedRatios = [];
+  for (let i = 0; i < checkpoints.length; i++) {
+    const frac = checkpoints[i];
+    const prevFrac = i === 0 ? 0 : checkpoints[i - 1];
+    const t0 = st + elapsedMs * prevFrac;
+    const t1 = st + elapsedMs * frac;
+    const segH = (t1 - t0) / 3600000;
+    if (segH < 0.5) continue;
+
+    const s0 = interpScoreAtTime(targetGraph, t0);
+    const s1 = interpScoreAtTime(targetGraph, t1);
+    const curSegPace = (s1 - s0) / segH;
+
+    let maxHistSegPace = 0;
+    for (const rObj of eraAdjustedRefs) {
+      const g = rObj.graph;
+      const gDur = g.endTime - g.startTime;
+      const gp0 = ((t0 - st) / dur) * gDur + g.startTime;
+      const gp1 = ((t1 - st) / dur) * gDur + g.startTime;
+      const gs0 = interpScoreAtTime(g, gp0) * rObj.eraScale;
+      const gs1 = interpScoreAtTime(g, gp1) * rObj.eraScale;
+      const gSegH = Math.max(0.1, (gp1 - gp0) / 3600000);
+      const gSegPace = (gs1 - gs0) / gSegH;
+      if (gSegPace > maxHistSegPace) maxHistSegPace = gSegPace;
+    }
+    if (maxHistSegPace > 0) {
+      sustainedRatios.push(curSegPace / maxHistSegPace);
+    }
+  }
+
+  // 全区間の中央値・最小値が過去最高水準の95%以上なら「歴代最速ペース推移（例外）」と判定
+  let capMultiplier = 1.10;
+  if (sustainedRatios.length >= 2) {
+    const minRatio = Math.min(...sustainedRatios);
+    const medRatio = calcMedian(sustainedRatios);
+    if (minRatio >= 0.95 && medRatio >= 1.00) {
+      // 過去最高を継続的に上回っている超過分に応じて上限を緩和（最大1.30倍まで）
+      capMultiplier = Math.min(1.30, Math.max(1.10, medRatio * 1.05));
+    }
+  }
+
+  // 直近実測時速そのものは下回らないよう保護しつつ上限を設定
+  return Math.max(recentPace * 1.05, maxHistRemPace * capMultiplier);
+}
+
+// 元の予測カーブの曲線形状を保ったまま、残り増分を比率伸縮して手動補正を適用
+function applyNaturalManualAdjustment(pred, adjustPt) {
+  const delta = Number(adjustPt) || 0;
+  if (pred.isFinished || delta === 0) {
+    return { ...pred, manualAdjustPt: 0 };
+  }
+  const cur = pred.currentScore;
+  const origFinal = pred.centralFinal;
+  const origGain = origFinal - cur;
+  const targetFinal = Math.max(cur, origFinal + delta);
+  const newGain = targetFinal - cur;
+  const scale = origGain > 1 ? newGain / origGain : 0;
+
+  const newMin = Math.max(cur, cur + (pred.minFinal - cur) * scale);
+  const newMax = Math.max(targetFinal, cur + (pred.maxFinal - cur) * scale);
+  const newSeries = pred.forecastSeries.map((pt, idx) => {
+    if (idx === 0) return pt;
+    return {
+      p: pt.p,
+      central: Math.max(cur, cur + (pt.central - cur) * scale),
+      min: Math.max(cur, cur + (pt.min - cur) * scale),
+      max: Math.max(cur, cur + (pt.max - cur) * scale),
+    };
+  });
+
+  return {
+    ...pred,
+    centralFinal: targetFinal,
+    minFinal: newMin,
+    maxFinal: newMax,
+    halfSpread: Math.max(targetFinal - newMin, newMax - targetFinal),
+    forecastSeries: newSeries,
+    manualAdjustPt: Math.round(targetFinal - origFinal),
+  };
+}
+
+function computePredictionServer(targetItem, targetGraph, refPairs, targetRank, manualAdjustPt = 0) {
   const st = targetGraph.startTime;
   const et = targetGraph.endTime;
   const dur = et - st;
@@ -690,6 +804,14 @@ function computePredictionServer(targetItem, targetGraph, refPairs, targetRank) 
   const gridSteps = 96;
   const stepDtH = remH / gridSteps;
   const isNightEnd = targetEndHour >= 1 && targetEndHour <= 6;
+  const maxAllowedPace = calcHistoricalPaceLimit(
+    targetGraph,
+    eraAdjustedRefs,
+    currentScore,
+    elapsedMs,
+    remH,
+    recentPace
+  );
   const refModels = [];
 
   for (const rc of refCalcs) {
@@ -739,6 +861,10 @@ function computePredictionServer(targetItem, targetGraph, refPairs, targetRank) 
 
           const minInc = recentPace * floorRatio * stepDtH;
           rawInc = Math.max(rawInc, minInc);
+        }
+
+        if (Number.isFinite(maxAllowedPace) && stepDtH > 0) {
+          rawInc = Math.min(rawInc, maxAllowedPace * stepDtH);
         }
 
         accScore += rawInc;
@@ -851,25 +977,27 @@ function computePredictionServer(targetItem, targetGraph, refPairs, targetRank) 
 
   const halfSpread = isFinished ? 0 : Math.max(centralFinal - minFinal, maxFinal - centralFinal);
 
-  return {
-    targetItem,
-    targetGraph,
-    rank: targetRank,
-    currentScore,
-    lastT,
-    elapsedH,
-    totalH: dur / 3600000,
-    pCur,
-    isFinished,
-    recentPace,
-    centralFinal,
-    minFinal,
-    maxFinal,
-    halfSpread,
-    forecastSeries,
-    refModels,
-  };
-}
+  return applyNaturalManualAdjustment(
+    {
+      targetItem,
+      targetGraph,
+      rank: targetRank,
+      currentScore,
+      lastT,
+      elapsedH,
+      totalH: dur / 3600000,
+      pCur,
+      isFinished,
+      recentPace,
+      centralFinal,
+      minFinal,
+      maxFinal,
+      halfSpread,
+      forecastSeries,
+      refModels,
+    },
+    manualAdjustPt
+  );
 
 // =========================================================================
 // 6. サーバーサイド Canvas 描画（承認済み新レイアウト・トリプル 2160×820）
@@ -1681,7 +1809,14 @@ async function runAutomatedPollAndBroadcast(triggerReason = "scheduled", preFetc
       });
     }
 
-    predsByRank[tierDef.rank] = computePredictionServer(target, targetGraph, refPairs, tierDef.rank);
+    const adjMap = memStore.manualAdjustments[target.key] || {};
+    predsByRank[tierDef.rank] = computePredictionServer(
+      target,
+      targetGraph,
+      refPairs,
+      tierDef.rank,
+      Number(adjMap[tierDef.rank]) || 0
+    );
   }
 
   const rendered = renderServerTripleImageBuffer(target, predsByRank);
@@ -1975,6 +2110,7 @@ app.get("/api/admin/bootstrap", requireAdmin, (_req, res) => {
   res.json({
     events: memStore.events,
     graphs: memStore.graphs,
+    manualAdjustments: memStore.manualAdjustments,
     subscriptionCount: subs.length,
     lastManualUpdateAt: memStore.lastManualUpdateAt,
     lastAutoFetchAt: memStore.lastAutoFetchAt,
@@ -2044,6 +2180,15 @@ app.post("/api/admin/broadcast", requireAdmin, upload.single("image"), async (re
     const now = Date.now();
     memStore.lastManualUpdateAt = now;
     await persistMeta();
+
+    const eventKey = (req.body.eventKey || "").trim();
+    if (eventKey && req.body.manualAdjustments) {
+      try {
+        const parsedAdj = JSON.parse(req.body.manualAdjustments);
+        memStore.manualAdjustments[eventKey] = parsedAdj;
+        await saveRedisJson("borderbot:adjustments", memStore.manualAdjustments);
+      } catch (_) {}
+    }
 
     if (nowBorderText) {
       const m = /最終更新\(([^)]+)\)/.exec(nowBorderText);
