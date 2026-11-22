@@ -266,6 +266,15 @@
       </div>
       <div class="slot-editor" id="slotEditor"></div>
 
+      <!-- ランク別 5万pt単位 手動補正パネル -->
+      <div id="manualAdjustPanel" style="margin-top:12px;padding:12px 14px;background:#f8fafc;border:1px solid #cbd5e1;border-radius:6px;">
+        <div style="font-size:13px;font-weight:700;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;">
+          <span>🎚️ 着地予測 手動微調整（5万pt単位 / Shift+クリックで25万pt単位）</span>
+          <button type="button" onclick="resetAllManualAdjust()" style="height:28px;padding:0 10px;font-size:12px;">全ランク自動に戻す</button>
+        </div>
+        <div id="manualAdjustRows" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px;"></div>
+      </div>
+
       <div class="custom-msg-box">
         <div class="row" style="justify-content:space-between;margin-bottom:8px;">
           <label style="font-weight:700;">📢 任意テキスト（お知らせ・補足コメントなど / 空欄なら送信しません）:</label>
@@ -333,6 +342,7 @@
       events: [],
       eligibleItems: [],
       graphCache: new Map(), // `${key}::${rank}` -> graphData
+      manualAdjustments: {}, // { [eventKey]: { 1000: -50000, ... } }
       selectedKey: null,
       mode: "triple",
       themeOverride: "auto",
@@ -461,6 +471,9 @@
             state.graphCache.set(k, g);
           }
         }
+      }
+      if (data.manualAdjustments && typeof data.manualAdjustments === "object") {
+        state.manualAdjustments = data.manualAdjustments;
       }
       document.getElementById("statEvents").textContent = `イベント一覧キャッシュ: ${state.events.length}件`;
       document.getElementById("statSubs").textContent = `通知購読チャンネル: ${data.subscriptionCount}ch`;
@@ -832,8 +845,9 @@
         const pred = getPredictionFor(targetKey, tier.rank);
         if (pred && pred.metaInfo) {
           const m = pred.metaInfo;
+          const adjTxt = pred.manualAdjustPt ? ` / 手動補正: ${pred.manualAdjustPt > 0 ? "+" : ""}${Math.round(pred.manualAdjustPt / 10000)}万pt` : "";
           lines.push(
-            `・${tier.label}(T${tier.rank.toLocaleString()}): ${m.zoneLabel} / 時速重み${m.wPacePct}% / 勢い係数${m.liveHeat.toFixed(2)}x`
+            `・${tier.label}(T${tier.rank.toLocaleString()}): ${m.zoneLabel} / 時速重み${m.wPacePct}% / 勢い係数${m.liveHeat.toFixed(2)}x${adjTxt}`
           );
         } else {
           lines.push(`・${tier.label}(T${tier.rank.toLocaleString()}): データ未取得`);
@@ -950,6 +964,106 @@
         zone.wPace = Math.min(0.55, zone.wPace + earlyBoost);
       }
       return zone;
+    }
+
+    function calcHistoricalPaceLimit(targetGraph, eraAdjustedRefs, currentScore, elapsedMs, remH, recentPace) {
+      if (!eraAdjustedRefs || eraAdjustedRefs.length === 0 || remH <= 0) {
+        return Infinity;
+      }
+      const st = targetGraph.startTime;
+      const et = targetGraph.endTime;
+      const dur = et - st;
+      const pCur = Math.min(1, elapsedMs / dur);
+
+      let maxHistRemPace = 0;
+      for (const rObj of eraAdjustedRefs) {
+        const g = rObj.graph;
+        const gDur = g.endTime - g.startTime;
+        const gCur = interpScoreAtProgress(g, pCur) * rObj.eraScale;
+        const gFinal = g.tier[g.tier.length - 1][1] * rObj.eraScale;
+        const gRemH = Math.max(0.1, (1 - pCur) * (gDur / 3600000));
+        const gRemPace = Math.max(0, (gFinal - gCur) / gRemH);
+        if (gRemPace > maxHistRemPace) maxHistRemPace = gRemPace;
+      }
+      if (maxHistRemPace <= 0) return Infinity;
+
+      const checkpoints = [0.25, 0.50, 0.75, 1.0];
+      const sustainedRatios = [];
+      for (let i = 0; i < checkpoints.length; i++) {
+        const frac = checkpoints[i];
+        const prevFrac = i === 0 ? 0 : checkpoints[i - 1];
+        const t0 = st + elapsedMs * prevFrac;
+        const t1 = st + elapsedMs * frac;
+        const segH = (t1 - t0) / 3600000;
+        if (segH < 0.5) continue;
+
+        const s0 = interpScoreAtTime(targetGraph, t0);
+        const s1 = interpScoreAtTime(targetGraph, t1);
+        const curSegPace = (s1 - s0) / segH;
+
+        let maxHistSegPace = 0;
+        for (const rObj of eraAdjustedRefs) {
+          const g = rObj.graph;
+          const gDur = g.endTime - g.startTime;
+          const gp0 = ((t0 - st) / dur) * gDur + g.startTime;
+          const gp1 = ((t1 - st) / dur) * gDur + g.startTime;
+          const gs0 = interpScoreAtTime(g, gp0) * rObj.eraScale;
+          const gs1 = interpScoreAtTime(g, gp1) * rObj.eraScale;
+          const gSegH = Math.max(0.1, (gp1 - gp0) / 3600000);
+          const gSegPace = (gs1 - gs0) / gSegH;
+          if (gSegPace > maxHistSegPace) maxHistSegPace = gSegPace;
+        }
+        if (maxHistSegPace > 0) {
+          sustainedRatios.push(curSegPace / maxHistSegPace);
+        }
+      }
+
+      let capMultiplier = 1.10;
+      if (sustainedRatios.length >= 2) {
+        const minRatio = Math.min(...sustainedRatios);
+        const medRatio = calcMedian(sustainedRatios);
+        if (minRatio >= 0.95 && medRatio >= 1.00) {
+          capMultiplier = Math.min(1.30, Math.max(1.10, medRatio * 1.05));
+        }
+      }
+
+      return Math.max(recentPace * 1.05, maxHistRemPace * capMultiplier);
+    }
+
+    function applyNaturalManualAdjustment(pred, adjustPt) {
+      if (!pred) return null;
+      const delta = Number(adjustPt) || 0;
+      if (pred.isFinished || delta === 0) {
+        return { ...pred, manualAdjustPt: 0 };
+      }
+      const cur = pred.currentScore;
+      const origFinal = pred.centralFinal;
+      const origGain = origFinal - cur;
+      const targetFinal = Math.max(cur, origFinal + delta);
+      const newGain = targetFinal - cur;
+      const scale = origGain > 1 ? newGain / origGain : 0;
+
+      const newMin = Math.max(cur, cur + (pred.minFinal - cur) * scale);
+      const newMax = Math.max(targetFinal, cur + (pred.maxFinal - cur) * scale);
+      const newSeries = pred.forecastSeries.map((pt, idx) => {
+        if (idx === 0) return pt;
+        return {
+          p: pt.p,
+          central: Math.max(cur, cur + (pt.central - cur) * scale),
+          min: Math.max(cur, cur + (pt.min - cur) * scale),
+          max: Math.max(cur, cur + (pt.max - cur) * scale),
+        };
+      });
+
+      return {
+        ...pred,
+        centralFinal: targetFinal,
+        minFinal: newMin,
+        maxFinal: newMax,
+        halfSpread: Math.max(targetFinal - newMin, newMax - targetFinal),
+        forecastSeries: newSeries,
+        manualAdjustPt: Math.round(targetFinal - origFinal),
+      };
     }
 
     function computePrediction(targetItem, targetGraph, refPairs, targetRank) {
@@ -1136,6 +1250,14 @@
       const gridSteps = 96;
       const stepDtH = remH / gridSteps;
       const isNightEnd = targetEndHour >= 1 && targetEndHour <= 6;
+      const maxAllowedPace = calcHistoricalPaceLimit(
+        targetGraph,
+        eraAdjustedRefs,
+        currentScore,
+        elapsedMs,
+        remH,
+        recentPace
+      );
       const refModels = [];
 
       for (const rc of refCalcs) {
@@ -1183,6 +1305,10 @@
 
               const minInc = recentPace * floorRatio * stepDtH;
               rawInc = Math.max(rawInc, minInc);
+            }
+
+            if (Number.isFinite(maxAllowedPace) && stepDtH > 0) {
+              rawInc = Math.min(rawInc, maxAllowedPace * stepDtH);
             }
 
             accScore += rawInc;
@@ -1340,7 +1466,9 @@
         if (g) refPairs.push({ item: cand, graph: g });
       }
 
-      return computePrediction(targetItem, targetGraph, refPairs, targetRank);
+      const basePred = computePrediction(targetItem, targetGraph, refPairs, targetRank);
+      const adjPt = Number((state.manualAdjustments[eventKey] || {})[targetRank]) || 0;
+      return applyNaturalManualAdjustment(basePred, adjPt);
     }
 
     // =========================================================================
@@ -2359,8 +2487,83 @@
           : "選択中イベントのグラフデータはまだ取得されていません。";
 
       renderSlotEditor();
+      renderManualAdjustPanel();
       updateTextPreviews();
       renderActiveCanvas();
+    }
+
+    function getEventAdjustMap(eventKey) {
+      if (!eventKey) return {};
+      if (!state.manualAdjustments[eventKey]) state.manualAdjustments[eventKey] = {};
+      return state.manualAdjustments[eventKey];
+    }
+
+    function stepManualAdjust(rank, deltaMan, ev) {
+      if (!state.selectedKey) return;
+      const mult = ev && ev.shiftKey ? 5 : 1;
+      const map = getEventAdjustMap(state.selectedKey);
+      const curPt = Number(map[rank]) || 0;
+      map[rank] = curPt + deltaMan * mult * 10000;
+      renderAllUI();
+    }
+
+    function setManualAdjustMan(rank, valStr) {
+      if (!state.selectedKey) return;
+      const man = Number(valStr);
+      const map = getEventAdjustMap(state.selectedKey);
+      map[rank] = Number.isFinite(man) ? Math.round(man / 5) * 5 * 10000 : 0;
+      renderAllUI();
+    }
+
+    function resetManualAdjust(rank) {
+      if (!state.selectedKey) return;
+      const map = getEventAdjustMap(state.selectedKey);
+      map[rank] = 0;
+      renderAllUI();
+    }
+
+    function resetAllManualAdjust() {
+      if (!state.selectedKey) return;
+      state.manualAdjustments[state.selectedKey] = {};
+      renderAllUI();
+    }
+
+    function renderManualAdjustPanel() {
+      const container = document.getElementById("manualAdjustRows");
+      if (!container) return;
+      container.innerHTML = "";
+      const key = state.selectedKey;
+      const defs = [
+        { rank: 1000, label: "ドリーム級 (T1,000)" },
+        { rank: 5000, label: "ダイヤ級 (T5,000)" },
+        { rank: 10000, label: "プラチナ級 (T10,000)" },
+      ];
+      const map = getEventAdjustMap(key);
+
+      defs.forEach((d) => {
+        const adjPt = Number(map[d.rank]) || 0;
+        const adjMan = Math.round(adjPt / 10000);
+        const pred = key ? getPredictionFor(key, d.rank) : null;
+        const finalText = pred ? `${Math.round(pred.centralFinal / 10000).toLocaleString()}万 pt` : "未取得";
+
+        const card = document.createElement("div");
+        card.style.cssText = "padding:10px;background:#ffffff;border:1px solid #cbd5e1;border-radius:6px;";
+        card.innerHTML = `
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <strong style="font-size:13px;">${d.label}</strong>
+            <span style="font-size:12px;color:#1d4ed8;font-weight:700;">着地: ${finalText}</span>
+          </div>
+          <div style="display:flex;gap:6px;align-items:center;">
+            <button type="button" onclick="stepManualAdjust(${d.rank}, -5, event)" style="height:30px;padding:0 9px;font-weight:700;">-5万</button>
+            <input type="number" step="5" value="${adjMan}" onchange="setManualAdjustMan(${d.rank}, this.value)"
+              style="width:78px;height:30px;text-align:right;padding:0 6px;border:1px solid #cbd5e1;border-radius:4px;font-weight:700;" />
+            <span style="font-size:12px;">万</span>
+            <button type="button" onclick="stepManualAdjust(${d.rank}, 5, event)" style="height:30px;padding:0 9px;font-weight:700;">+5万</button>
+            <button type="button" onclick="resetManualAdjust(${d.rank})" style="margin-left:auto;height:30px;padding:0 8px;font-size:11px;">自動に戻す</button>
+          </div>
+        `;
+        container.appendChild(card);
+      });
     }
 
     function renderSlotEditor() {
@@ -2472,6 +2675,8 @@
         formData.append("customText", document.getElementById("customTextInput").value.trim());
         formData.append("customTextPosition", document.getElementById("customTextPosSelect").value);
         formData.append("notify", shouldNotify ? "true" : "false");
+        formData.append("eventKey", state.selectedKey || "");
+        formData.append("manualAdjustments", JSON.stringify(state.manualAdjustments[state.selectedKey] || {}));
         if (blob) {
           formData.append("image", blob, filename);
         }
