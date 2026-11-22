@@ -9,6 +9,11 @@ const {
   Routes,
   SlashCommandBuilder,
   AttachmentBuilder,
+  ActionRowBuilder,
+  StringSelectMenuBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  PermissionFlagsBits,
 } = require("discord.js");
 
 let createCanvas = null;
@@ -41,6 +46,8 @@ const DISCORD_CLIENT_ID = process.env.DISCORD_CLIENT_ID || "";
 const UPSTASH_URL = (process.env.UPSTASH_REDIS_REST_URL || "").replace(/\/+$/, "");
 const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || "";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "2226";
+// ★ご自身のDiscord User IDを入力してください（環境変数 BOT_OWNER_ID でも設定可能）
+const BOT_OWNER_ID = process.env.BOT_OWNER_ID || "あなたのDiscordユーザーID";
 
 const HOLODORI_API_BASE = "https://holodori-border.com/api";
 const GITHUB_ARCHIVE_BASE = "https://raw.githubusercontent.com/holodori-tools/event-borders/main/archive";
@@ -114,6 +121,7 @@ const memStore = {
   archiveItems: [],
   archiveGraphs: {},
   subscriptions: [],
+  guildSettings: {},        // { [guildId]: { muteStart: 22, muteEnd: 6 } }
   manualAdjustments: {},    // { [eventKey]: { "1000": -50000, "5000": 0, ... } }
   nowBorderCache: null,     // { text, timeLabel, updatedAt }
   predictionCache: null,    // { imageBase64, filename, timeLabel, updatedAt }
@@ -163,7 +171,7 @@ async function saveRedisJson(key, value) {
 }
 
 async function loadStateFromRedis() {
-  const [evRaw, grRaw, subRaw, nbRaw, prRaw, metaRaw, adjRaw] = await Promise.all([
+  const [evRaw, grRaw, subRaw, nbRaw, prRaw, metaRaw, adjRaw, gsRaw] = await Promise.all([
     redisCommand(["GET", "borderbot:events"]),
     redisCommand(["GET", "borderbot:graphs"]),
     redisCommand(["GET", "borderbot:subscriptions"]),
@@ -171,6 +179,7 @@ async function loadStateFromRedis() {
     redisCommand(["GET", "borderbot:cache:prediction"]),
     redisCommand(["GET", "borderbot:meta"]),
     redisCommand(["GET", "borderbot:adjustments"]),
+    redisCommand(["GET", "borderbot:guild_settings"]),
   ]);
 
   if (evRaw) {
@@ -216,6 +225,12 @@ async function loadStateFromRedis() {
       memStore.manualAdjustments = parsedAdj && typeof parsedAdj === "object" ? parsedAdj : {};
     } catch (_) {}
   }
+  if (gsRaw) {
+    try {
+      const parsedGs = JSON.parse(gsRaw);
+      memStore.guildSettings = parsedGs && typeof parsedGs === "object" ? parsedGs : {};
+    } catch (_) {}
+  }
 }
 
 async function persistMeta() {
@@ -224,6 +239,91 @@ async function persistMeta() {
     lastAutoFetchAt: memStore.lastAutoFetchAt,
     lastExecutedSlot: memStore.lastExecutedSlot,
   });
+}
+
+// =========================================================================
+// 2.5 サーバー別ミュート時間帯判定 ＆ Discord設定UIビルダー
+// =========================================================================
+function canManageSubscribe(interaction) {
+  if (BOT_OWNER_ID && interaction.user?.id === BOT_OWNER_ID) return true;
+  if (interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) return true;
+  return false;
+}
+
+function isGuildMutedNow(guildId, nowMs = Date.now()) {
+  if (!guildId) return false;
+  const cfg = memStore.guildSettings[guildId];
+  if (!cfg || cfg.muteStart == null || cfg.muteEnd == null) return false;
+  const s = Number(cfg.muteStart);
+  const e = Number(cfg.muteEnd);
+  if (Number.isNaN(s) || Number.isNaN(e) || s === e) return false;
+
+  const jstHour = new Date(nowMs + 9 * 3600 * 1000).getUTCHours();
+  return s < e ? jstHour >= s && jstHour < e : jstHour >= s || jstHour < e;
+}
+
+function buildSubscribeMuteUI(guildId) {
+  const cfg = guildId ? memStore.guildSettings[guildId] : null;
+  const isMuted = Boolean(
+    cfg && cfg.muteStart != null && cfg.muteEnd != null && Number(cfg.muteStart) !== Number(cfg.muteEnd)
+  );
+  const selectedStart = isMuted ? Number(cfg.muteStart) : 22;
+  const selectedEnd = isMuted ? Number(cfg.muteEnd) : 6;
+
+  let statusLine;
+  if (isMuted) {
+    const nextDayLabel = selectedStart > selectedEnd ? "翌" : "";
+    const lastNotifyHour = (selectedStart + 23) % 24;
+    statusLine =
+      `🔕 **現在の設定：ミュート有効**\n` +
+      `・通知停止（ミュート）：**${selectedStart}時 〜 ${nextDayLabel}${selectedEnd}時になる前まで**\n` +
+      `・通知実行：**${selectedEnd}時 〜 ${lastNotifyHour}時台**`;
+  } else {
+    statusLine =
+      `🔔 **現在の設定：ミュートなし（24時間通知ON）**\n` +
+      `※下のプルダウンから時間を選ぶと即座に保存されます。`;
+  }
+
+  const startOptions = Array.from({ length: 24 }, (_, h) => ({
+    label: `ミュート開始：${h}時`,
+    description: `${h}:00 から通知を停止`,
+    value: String(h),
+    default: isMuted && h === selectedStart,
+  }));
+
+  const endOptions = Array.from({ length: 24 }, (_, h) => ({
+    label: `通知再開：${h}時`,
+    description: `${h}:00 から通知を再開`,
+    value: String(h),
+    default: isMuted && h === selectedEnd,
+  }));
+
+  const rowStart = new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId("mute_start_select")
+      .setPlaceholder(isMuted ? `ミュート開始：${selectedStart}時` : "ミュート開始時刻を選択（0〜23時）")
+      .addOptions(startOptions)
+  );
+
+  const rowEnd = new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId("mute_end_select")
+      .setPlaceholder(isMuted ? `通知再開：${selectedEnd}時` : "通知再開時刻を選択（0〜23時）")
+      .addOptions(endOptions)
+  );
+
+  const rowBtn = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("mute_disable_btn")
+      .setLabel("ミュートしない（24時間通知）")
+      .setStyle(isMuted ? ButtonStyle.Secondary : ButtonStyle.Success)
+      .setDisabled(!isMuted)
+  );
+
+  return {
+    content: `✅ このチャンネルをボーダー予測の通知先に登録しました。\n\n${statusLine}`,
+    components: [rowStart, rowEnd, rowBtn],
+  };
 }
 
 // =========================================================================
@@ -518,10 +618,8 @@ function calcHistoricalPaceLimit(targetGraph, eraAdjustedRefs, currentScore, ela
   const st = targetGraph.startTime;
   const et = targetGraph.endTime;
   const dur = et - st;
-  const lastT = st + elapsedMs;
   const pCur = Math.min(1, elapsedMs / dur);
 
-  // 1. 過去イベントにおける「残り同等時間（remH）」での歴代最高平均時速
   let maxHistRemPace = 0;
   for (const rObj of eraAdjustedRefs) {
     const g = rObj.graph;
@@ -534,7 +632,6 @@ function calcHistoricalPaceLimit(targetGraph, eraAdjustedRefs, currentScore, ela
   }
   if (maxHistRemPace <= 0) return Infinity;
 
-  // 2. 例外判定：開始〜現在までの各区間で、過去イベント並み〜それ以上のハイペースを維持してきたか
   const checkpoints = [0.25, 0.50, 0.75, 1.0];
   let sustainedRatios = [];
   for (let i = 0; i < checkpoints.length; i++) {
@@ -566,22 +663,18 @@ function calcHistoricalPaceLimit(targetGraph, eraAdjustedRefs, currentScore, ela
     }
   }
 
-  // 全区間の中央値・最小値が過去最高水準の95%以上なら「歴代最速ペース推移（例外）」と判定
   let capMultiplier = 1.10;
   if (sustainedRatios.length >= 2) {
     const minRatio = Math.min(...sustainedRatios);
     const medRatio = calcMedian(sustainedRatios);
     if (minRatio >= 0.95 && medRatio >= 1.00) {
-      // 過去最高を継続的に上回っている超過分に応じて上限を緩和（最大1.30倍まで）
       capMultiplier = Math.min(1.30, Math.max(1.10, medRatio * 1.05));
     }
   }
 
-  // 直近実測時速そのものは下回らないよう保護しつつ上限を設定
   return Math.max(recentPace * 1.05, maxHistRemPace * capMultiplier);
 }
 
-// 元の予測カーブの曲線形状を保ったまま、残り増分を比率伸縮して手動補正を適用
 function applyNaturalManualAdjustment(pred, adjustPt) {
   const delta = Number(adjustPt) || 0;
   if (pred.isFinished || delta === 0) {
@@ -631,7 +724,6 @@ function computePredictionServer(targetItem, targetGraph, refPairs, targetRank, 
   const pCur = Math.min(1, elapsedMs / dur);
   const isFinished = pCur >= 0.998 && !targetItem.live;
 
-  // 直近1時間時速（最低20分窓を確保）
   const display1hMs = Math.min(3600 * 1000, Math.max(20 * 60 * 1000, elapsedMs * 0.12));
   const sDisplayPrev = interpScoreAtTime(targetGraph, Math.max(st, lastT - display1hMs));
   const recentPace = ((currentScore - sDisplayPrev) / display1hMs) * 3600000;
@@ -665,7 +757,6 @@ function computePredictionServer(targetItem, targetGraph, refPairs, targetRank, 
     }
   }
 
-  // 終盤6時間以内の急加速モメンタム補正（直近1h時速が6h平均を大きく上回る場合）
   let accelBoost = 1.0;
   if (remH <= 6.0 && pace6h > 0 && recentPace > pace6h) {
     const surgeRatio = recentPace / pace6h;
@@ -795,7 +886,6 @@ function computePredictionServer(targetItem, targetGraph, refPairs, targetRank, 
   const medRPace = calcMedian(rPaces);
   const liveHeat = wLevelWeight * medRNow + wPaceWeight * medRPace;
 
-  // 階級別の終盤スパート弾力性（ダイヤ級は0.07を維持、ドリーム・プラチナの終盤スパートを適正化）
   const alpha = Number(targetRank) <= 1000 ? 0.14 : Number(targetRank) >= 10000 ? 0.14 : 0.07;
   const clampedHeat = Math.max(0.65, Math.min(2.30, liveHeat));
   const remDamp = Math.pow(Math.max(0, 1.0 - pCur), 0.65);
@@ -839,7 +929,6 @@ function computePredictionServer(targetItem, targetGraph, refPairs, targetRank, 
 
         let rawInc = dh * baseMultiplier * envMultiplier * stepElasticity;
 
-        // 終盤6時間以内の予測曲線下限フロアー ＆ 初速の滑らかな接続
         if (remH <= 6.0 && recentPace > 0) {
           let floorRatio = 1.0;
           if (isNightEnd) {
@@ -852,7 +941,6 @@ function computePredictionServer(targetItem, targetGraph, refPairs, targetRank, 
             floorRatio = 1.00;
           }
 
-          // 予測開始直後の30分間は現在時速の96%から滑らかに接続
           if (elapsedFromNowH < 0.5) {
             const blend = elapsedFromNowH / 0.5;
             const connRatio = 0.96 * (1.0 - blend) + floorRatio * blend;
@@ -914,7 +1002,6 @@ function computePredictionServer(targetItem, targetGraph, refPairs, targetRank, 
     const rawCentralFinal = refModels.reduce((acc, m) => acc + m.impliedFinal * m.weight, 0) / totalW;
     centralFinal = rawCentralFinal;
 
-    // 緩和版上限キャップ（直近1hペースが上回っている場合はキャップ解除、それ以外は+15%〜+18%まで許容）
     const upperAnchors = refModels
       .filter((m) => m.adjHCur >= currentScore * 0.98)
       .sort((a, b) => a.adjHCur - b.adjHCur);
@@ -1118,7 +1205,6 @@ function renderServerTripleImageBuffer(targetItem, predsByRank) {
   const marginX = 32;
   const gapX = 24;
 
-  // 上部共通タイトルバー
   const topBarY = 22;
   const topBarH = 88;
   ctx.save();
@@ -1172,7 +1258,6 @@ function renderServerTripleImageBuffer(targetItem, predsByRank) {
     drawServerComparisonSlot(ctx, cx, cardY, cardW, cardH, pred, tierDef.rank);
   });
 
-  // 1MB制限対策：850KB超過時は高品質JPEGへ自動変換
   const pngBuf = canvas.toBuffer("image/png");
   if (pngBuf.length <= 850 * 1024) {
     return { buffer: pngBuf, filename: "border_prediction.png" };
@@ -1250,7 +1335,6 @@ function drawServerComparisonSlot(ctx, x, y, w, h, pred, rank) {
 
   const pad = 26;
 
-  // 枠内ヘッダー（階級名と順位バッジのみ）
   ctx.save();
   ctx.font = `800 30px ${serverFontFamily}`;
   ctx.fillStyle = theme.primary;
@@ -1584,7 +1668,6 @@ async function fetchActiveEventFromNewApi(now = Date.now()) {
   }
   if (!activeEv) return null;
 
-  // スコアチャレンジ(event_type === 2)はボーダー予測対象外
   if (Number(activeEv.event_type) === 2) return null;
 
   const detailRes = await fetch(`${HOLODORI_API_BASE}/event/${encodeURIComponent(activeEv.event_id)}`);
@@ -1599,7 +1682,6 @@ async function fetchActiveEventFromNewApi(now = Date.now()) {
   );
   if (pointRankings.length === 0) return null;
 
-  // 現在時刻に開催中のチャプターランキングを特定
   const activeRanking = pointRankings.find((r) => {
     const cst = parseJstDateTime(r.chapter_start);
     const cet = parseJstDateTime(r.chapter_end);
@@ -1673,10 +1755,9 @@ function mergeEventsListToStore(newApiEvents) {
 async function runAutomatedPollAndBroadcast(triggerReason = "scheduled", preFetchedTarget = null) {
   const now = Date.now();
 
-  // 直近10分以内に手動更新が行われていた場合はスキップ
   if (triggerReason === "scheduled" && now - memStore.lastManualUpdateAt < 10 * 60 * 1000) {
     console.log("[AutoPoll] 直近10分以内に手動更新があるため、自動取得・定時配信をスキップしました。");
-    return;
+    return { fetched: false, reason: "manual_cooldown" };
   }
 
   let target = preFetchedTarget;
@@ -1685,19 +1766,18 @@ async function runAutomatedPollAndBroadcast(triggerReason = "scheduled", preFetc
       target = await fetchActiveEventFromNewApi(now);
     } catch (err) {
       console.error("[AutoPoll] イベント情報取得エラー:", err.message);
-      return;
+      throw err;
     }
   }
 
   if (!target) {
     console.log("[AutoPoll] 現在開催中の対象イベント/チャプターがないためスキップしました。");
-    return;
+    return { fetched: false, reason: "no_active_event" };
   }
 
-  // 終了時刻を過ぎている場合（最終確定ボーダー配信は行わない）
   if (now > target.endTime + 59 * 1000) {
     console.log("[AutoPoll] イベント/チャプター終了後のため配信をスキップしました。");
-    return;
+    return { fetched: false, reason: "event_ended" };
   }
 
   mergeEventsListToStore(target.allEventsRaw);
@@ -1721,7 +1801,6 @@ async function runAutomatedPollAndBroadcast(triggerReason = "scheduled", preFetc
     saveRedisJson("borderbot:events", memStore.events).catch(() => {});
   }
 
-  // 3順位（T1000, T5000, T10000）の10分間隔履歴を並列取得
   const fetchedRanks = await Promise.all(
     TIER_DEFS.map(async (tierDef) => {
       const url = `${HOLODORI_API_BASE}/history?event_id=${encodeURIComponent(
@@ -1842,16 +1921,21 @@ async function runAutomatedPollAndBroadcast(triggerReason = "scheduled", preFetc
     const subs = normalizeSubscriptions(memStore.subscriptions);
     if (subs.length === 0) {
       console.log("[AutoPoll] 購読チャンネル0件のため配信なし");
-      return;
+      return { fetched: true, targetKey: target.key, timeLabel };
     }
 
     let okCount = 0;
     let ngCount = 0;
+    let mutedSkipCount = 0;
     for (const chId of subs) {
       try {
         const channel = await client.channels.fetch(chId);
         if (!channel || !channel.isTextBased()) {
           ngCount++;
+          continue;
+        }
+        if (channel.guildId && isGuildMutedNow(channel.guildId, now)) {
+          mutedSkipCount++;
           continue;
         }
         const files = rendered
@@ -1867,8 +1951,12 @@ async function runAutomatedPollAndBroadcast(triggerReason = "scheduled", preFetc
         ngCount++;
       }
     }
-    console.log(`[AutoPoll] 定時一斉配信完了（成功: ${okCount}ch / 失敗: ${ngCount}ch）`);
+    console.log(
+      `[AutoPoll] 定時一斉配信完了（成功: ${okCount}ch / 失敗: ${ngCount}ch / ミュート時間スキップ: ${mutedSkipCount}ch）`
+    );
   }
+
+  return { fetched: true, targetKey: target.key, shortLabel: target.shortLabel, timeLabel };
 }
 
 function startScheduledPoller() {
@@ -1890,7 +1978,6 @@ function startScheduledPoller() {
       const slotKey = `${yyyy}-${mo}-${dd}-${String(hh).padStart(2, "0")}-${String(mm).padStart(2, "0")}`;
       if (memStore.lastExecutedSlot === slotKey) return;
 
-      // 32分30秒の場合は、現在のイベント/チャプター終了3時間前以内かどうかを確認
       let preFetchedTarget = null;
       if (isHalfHourTrigger) {
         let activeEnd =
@@ -1932,7 +2019,13 @@ const client = new Client({
 const slashCommands = [
   new SlashCommandBuilder()
     .setName("subscribe")
-    .setDescription("このチャンネルにボーダー予測の一斉通知を登録します"),
+    .setDescription("このチャンネルにボーダー予測の一斉通知を登録します")
+    .addBooleanOption((opt) =>
+      opt
+        .setName("mutetime")
+        .setDescription("Trueにすると通知をミュートする時間帯の設定UIを表示します")
+        .setRequired(false)
+    ),
   new SlashCommandBuilder()
     .setName("unsubscribe")
     .setDescription("このチャンネルのボーダー予測通知を解除します"),
@@ -1962,6 +2055,11 @@ async function registerSlashCommands() {
 
 client.once("clientReady", async () => {
   console.log(`[Discord] ログイン完了: ${client.user.tag}`);
+  console.log(`[Discord] 導入サーバー一覧 (計 ${client.guilds.cache.size} サーバー):`);
+  client.guilds.cache.forEach((g) => {
+    console.log(`  - ${g.name} (ID: ${g.id} / メンバー数: ${g.memberCount}人)`);
+  });
+
   await registerSlashCommands();
   startScheduledPoller();
 
@@ -1969,26 +2067,113 @@ client.once("clientReady", async () => {
   runAutomatedPollAndBroadcast("boot_sync").catch(() => {});
 });
 
+client.on("guildCreate", (guild) => {
+  console.log(`[Discord] 新規サーバーに参加: ${guild.name} (ID: ${guild.id} / メンバー数: ${guild.memberCount}人)`);
+});
+
 client.on("interactionCreate", async (interaction) => {
+  // 1. ミュート時間帯セレクトメニュー操作
+  if (
+    interaction.isStringSelectMenu() &&
+    (interaction.customId === "mute_start_select" || interaction.customId === "mute_end_select")
+  ) {
+    if (!canManageSubscribe(interaction)) {
+      await interaction.reply({
+        content: "⚠️ この設定は「サーバー管理」権限を持つメンバーのみ変更できます。",
+        ephemeral: true,
+      });
+      return;
+    }
+    const guildId = interaction.guildId;
+    if (!guildId) return;
+
+    const prev = memStore.guildSettings[guildId] || { muteStart: 22, muteEnd: 6 };
+    const pickedHour = Number(interaction.values[0]);
+    memStore.guildSettings[guildId] = {
+      muteStart: interaction.customId === "mute_start_select" ? pickedHour : Number(prev.muteStart ?? 22),
+      muteEnd: interaction.customId === "mute_end_select" ? pickedHour : Number(prev.muteEnd ?? 6),
+    };
+    await saveRedisJson("borderbot:guild_settings", memStore.guildSettings);
+    await interaction.update(buildSubscribeMuteUI(guildId));
+    return;
+  }
+
+  // 2. 「ミュートしない」ボタン操作
+  if (interaction.isButton() && interaction.customId === "mute_disable_btn") {
+    if (!canManageSubscribe(interaction)) {
+      await interaction.reply({
+        content: "⚠️ この設定は「サーバー管理」権限を持つメンバーのみ変更できます。",
+        ephemeral: true,
+      });
+      return;
+    }
+    const guildId = interaction.guildId;
+    if (guildId && memStore.guildSettings[guildId]) {
+      delete memStore.guildSettings[guildId];
+      await saveRedisJson("borderbot:guild_settings", memStore.guildSettings);
+    }
+    await interaction.update(buildSubscribeMuteUI(guildId));
+    return;
+  }
+
   if (!interaction.isChatInputCommand()) return;
 
-  const { commandName, channelId } = interaction;
+  const { commandName, channelId, guildId } = interaction;
 
   try {
     if (commandName === "subscribe") {
+      if (!canManageSubscribe(interaction)) {
+        await interaction.reply({
+          content: "⚠️ このコマンドは「サーバー管理」権限を持つメンバーのみ実行できます。",
+          ephemeral: true,
+        });
+        return;
+      }
+
       if (!Array.isArray(memStore.subscriptions)) memStore.subscriptions = [];
       if (!memStore.subscriptions.includes(channelId)) {
         memStore.subscriptions.push(channelId);
         await saveRedisJson("borderbot:subscriptions", memStore.subscriptions);
       }
+
+      const openMuteUI = interaction.options.getBoolean("mutetime") ?? false;
+      if (!openMuteUI) {
+        if (guildId && memStore.guildSettings[guildId]) {
+          delete memStore.guildSettings[guildId];
+          await saveRedisJson("borderbot:guild_settings", memStore.guildSettings);
+        }
+        await interaction.reply({
+          content: "✅ このチャンネルをボーダー予測の一斉通知先に登録しました（ミュートなし・24時間通知）。",
+          ephemeral: true,
+        });
+        return;
+      }
+
+      if (!guildId) {
+        await interaction.reply({
+          content: "✅ 通知先に登録しました（※時間帯ミュート設定はサーバー内チャンネルでのみ利用できます）。",
+          ephemeral: true,
+        });
+        return;
+      }
+
+      const uiPayload = buildSubscribeMuteUI(guildId);
       await interaction.reply({
-        content: "✅ このチャンネルをボーダー予測の一斉通知先に登録しました。",
+        ...uiPayload,
         ephemeral: true,
       });
       return;
     }
 
     if (commandName === "unsubscribe") {
+      if (!canManageSubscribe(interaction)) {
+        await interaction.reply({
+          content: "⚠️ このコマンドは「サーバー管理」権限を持つメンバーのみ実行できます。",
+          ephemeral: true,
+        });
+        return;
+      }
+
       if (!Array.isArray(memStore.subscriptions)) memStore.subscriptions = [];
       memStore.subscriptions = memStore.subscriptions.filter((id) => id !== channelId);
       await saveRedisJson("borderbot:subscriptions", memStore.subscriptions);
@@ -2112,6 +2297,7 @@ app.get("/api/admin/bootstrap", requireAdmin, (_req, res) => {
     events: memStore.events,
     graphs: memStore.graphs,
     manualAdjustments: memStore.manualAdjustments,
+    guildSettings: memStore.guildSettings,
     subscriptionCount: subs.length,
     lastManualUpdateAt: memStore.lastManualUpdateAt,
     lastAutoFetchAt: memStore.lastAutoFetchAt,
@@ -2122,6 +2308,25 @@ app.get("/api/admin/bootstrap", requireAdmin, (_req, res) => {
       ? { timeLabel: memStore.predictionCache.timeLabel, updatedAt: memStore.predictionCache.updatedAt }
       : null,
   });
+});
+
+// 管理画面からAPI最新データを即時取得（通知は送信しない）
+app.post("/api/admin/fetch-api", requireAdmin, async (_req, res) => {
+  try {
+    const result = await runAutomatedPollAndBroadcast("manual_api_fetch");
+    return res.json({
+      ok: true,
+      result,
+      events: memStore.events,
+      graphs: memStore.graphs,
+      nowBorderCache: memStore.nowBorderCache
+        ? { text: memStore.nowBorderCache.text, timeLabel: memStore.nowBorderCache.timeLabel }
+        : null,
+    });
+  } catch (err) {
+    console.error("[AdminFetchApi] エラー:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
 });
 
 app.post("/api/admin/cache-events", requireAdmin, async (req, res) => {
@@ -2175,6 +2380,7 @@ app.post("/api/admin/broadcast", requireAdmin, upload.single("image"), async (re
     const customText = (req.body.customText || "").trim();
     const customTextPosition = req.body.customTextPosition || "below";
     const shouldNotify = String(req.body.notify || "true") !== "false";
+    const respectMuteTime = String(req.body.respectMuteTime || "false") === "true";
     const imageBuffer = req.file ? req.file.buffer : null;
     const filename = req.file?.originalname || "border_prediction.png";
 
@@ -2214,7 +2420,6 @@ app.post("/api/admin/broadcast", requireAdmin, upload.single("image"), async (re
       await saveRedisJson("borderbot:cache:prediction", memStore.predictionCache);
     }
 
-    // 「データのみ更新（通知は送信しない）」の場合
     if (!shouldNotify) {
       return res.json({
         ok: true,
@@ -2234,12 +2439,18 @@ app.post("/api/admin/broadcast", requireAdmin, upload.single("image"), async (re
 
     let successCount = 0;
     let failCount = 0;
+    let mutedSkipCount = 0;
 
     for (const chId of subs) {
       try {
         const channel = await client.channels.fetch(chId);
         if (!channel || !channel.isTextBased()) {
           failCount++;
+          continue;
+        }
+
+        if (respectMuteTime && channel.guildId && isGuildMutedNow(channel.guildId, now)) {
+          mutedSkipCount++;
           continue;
         }
 
@@ -2268,9 +2479,10 @@ app.post("/api/admin/broadcast", requireAdmin, upload.single("image"), async (re
       }
     }
 
+    const skipNote = mutedSkipCount > 0 ? ` / ミュート時間スキップ: ${mutedSkipCount}ch` : "";
     return res.json({
       ok: true,
-      message: `一斉通知を完了しました（成功: ${successCount}ch / 失敗: ${failCount}ch）`,
+      message: `一斉通知を完了しました（成功: ${successCount}ch / 失敗: ${failCount}ch${skipNote}）`,
     });
   } catch (err) {
     console.error("[Broadcast] 致命的エラー:", err);
