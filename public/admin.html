@@ -101,6 +101,8 @@
     button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
     button.primary:hover { background: #1e40af; }
     button.ok { background: var(--ok); color: #fff; border-color: var(--ok); }
+    button.ok:hover { background: #166534; }
+    button:disabled { opacity: 0.55; cursor: not-allowed; }
     button.broadcast {
       background: var(--broadcast);
       color: #fff;
@@ -177,6 +179,27 @@
       border: 1px solid #fde68a;
       border-radius: 6px;
     }
+    .mute-opt-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      font-weight: 700;
+      color: #334155;
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      border-radius: 5px;
+      padding: 0 12px;
+      height: 44px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .mute-opt-label input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      cursor: pointer;
+      accent-color: var(--accent);
+    }
     textarea {
       width: 100%;
       height: 84px;
@@ -220,6 +243,7 @@
       <div class="row" style="margin-bottom:10px;">
         <label style="font-weight:700;">対象イベント:</label>
         <select id="targetEventSelect" style="min-width:280px;"></select>
+        <button class="ok" id="fetchApiBtn" onclick="fetchFromServerApi()">🌐 APIから最新データを取得</button>
         <button onclick="openListApi()">① イベント一覧API（新イベント時のみ）</button>
         <button onclick="loadArchiveFromGithub(true)">GitHub過去データ再読込</button>
       </div>
@@ -299,6 +323,10 @@
       <div class="row" style="justify-content:space-between;margin-bottom:12px;">
         <h2 style="border:none;margin:0;padding:0;">3. 配信内容プレビュー ＆ Bot一斉通知</h2>
         <div class="row">
+          <label class="mute-opt-label" title="チェック時、各サーバーの /subscribe mutetime で設定された時間帯のチャンネルには送信をスキップします">
+            <input type="checkbox" id="chkRespectMuteTime" checked />
+            <span>サーバーごとのミュート時間設定を適用する</span>
+          </label>
           <button class="ok" id="dataOnlyBtn" style="height:44px;padding:0 18px;" onclick="triggerBroadcast(false)">🔄 データのみ更新（通知は送信しない）</button>
           <button class="broadcast" id="broadcastBtn" onclick="triggerBroadcast(true)">🚀 Botに反映（登録チャンネルへ一斉通知）</button>
         </div>
@@ -478,6 +506,56 @@
       document.getElementById("statEvents").textContent = `イベント一覧キャッシュ: ${state.events.length}件`;
       document.getElementById("statSubs").textContent = `通知購読チャンネル: ${data.subscriptionCount}ch`;
     }
+
+    async function fetchFromServerApi() {
+      const btn = document.getElementById("fetchApiBtn");
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = "API取得中...";
+      }
+      try {
+        const res = await apiFetch("/api/admin/fetch-api", { method: "POST" });
+        const rawText = await res.text();
+        let data;
+        try {
+          data = JSON.parse(rawText);
+        } catch (_) {
+          throw new Error(`サーバーから予期しない応答が返りました (HTTP ${res.status})`);
+        }
+
+        if (!res.ok || !data.ok) {
+          throw new Error(data.error || `API取得に失敗しました (HTTP ${res.status})`);
+        }
+
+        await loadServerBootstrap();
+        rebuildCombinedItems();
+
+        const targetKey = data.result && data.result.targetKey;
+        if (targetKey && state.eligibleItems.some((it) => it.key === targetKey)) {
+          state.selectedKey = targetKey;
+          state.single.key = targetKey;
+          state.dual.forEach((s) => (s.key = targetKey));
+          state.triple.forEach((s) => (s.key = targetKey));
+        }
+
+        renderAllUI();
+
+        if (data.result && data.result.fetched === false) {
+          showToast("現在開催中の対象イベントがないためスキップしました");
+        } else {
+          showToast("APIから最新データを取得し、予測・現在ボーダーを更新しました");
+        }
+      } catch (err) {
+        showToast("API取得エラー: " + err.message);
+        console.error("fetchFromServerApi error:", err);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = "🌐 APIから最新データを取得";
+        }
+      }
+    }
+    window.fetchFromServerApi = fetchFromServerApi;
 
     // =========================================================================
     // 2. GitHub 過去完了データの直接読込
@@ -2670,11 +2748,14 @@
         const canvas = document.getElementById("reportCanvas");
         const { blob, filename } = await canvasToOptimizedBlob(canvas);
 
+        const respectMuteEl = document.getElementById("chkRespectMuteTime");
+
         const formData = new FormData();
         formData.append("nowBorderText", buildNowBorderText());
         formData.append("customText", document.getElementById("customTextInput").value.trim());
         formData.append("customTextPosition", document.getElementById("customTextPosSelect").value);
         formData.append("notify", shouldNotify ? "true" : "false");
+        formData.append("respectMuteTime", respectMuteEl && respectMuteEl.checked ? "true" : "false");
         formData.append("eventKey", state.selectedKey || "");
         formData.append("manualAdjustments", JSON.stringify(state.manualAdjustments[state.selectedKey] || {}));
         if (blob) {
