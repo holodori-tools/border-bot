@@ -125,7 +125,7 @@ const memStore = {
   manualAdjustments: {},    // { [eventKey]: { "1000": -50000, "5000": 0, ... } }
   nowBorderCache: null,     // { text, timeLabel, updatedAt }
   predictionCache: null,    // { imageBase64, filename, timeLabel, updatedAt }
-  lastManualUpdateAt: 0,    // 手動更新の最終タイムスタンプ（10分優先制御用）
+  lastManualUpdateAt: 0,    // 手動更新の最終タイムスタンプ
   lastAutoFetchAt: 0,
   lastExecutedSlot: "",     // 二重配信防止用スロットキー
   activeEndCache: null,     // { endTime, checkedAt }
@@ -1755,11 +1755,6 @@ function mergeEventsListToStore(newApiEvents) {
 async function runAutomatedPollAndBroadcast(triggerReason = "scheduled", preFetchedTarget = null) {
   const now = Date.now();
 
-  if (triggerReason === "scheduled" && now - memStore.lastManualUpdateAt < 10 * 60 * 1000) {
-    console.log("[AutoPoll] 直近10分以内に手動更新があるため、自動取得・定時配信をスキップしました。");
-    return { fetched: false, reason: "manual_cooldown" };
-  }
-
   let target = preFetchedTarget;
   if (!target) {
     try {
@@ -2418,13 +2413,6 @@ app.post("/api/admin/broadcast", requireAdmin, upload.single("image"), async (re
         updatedAt: now,
       };
       await saveRedisJson("borderbot:cache:prediction", memStore.predictionCache);
-    }
-
-    if (!shouldNotify) {
-      return res.json({
-        ok: true,
-        message: "✅ データを新しく更新しました（Discordへの一斉通知は送信していません / 10分間は自動更新を待機します）。",
-      });
     }
 
     const subs = normalizeSubscriptions(memStore.subscriptions);
