@@ -1485,6 +1485,18 @@
 
 let syncPredictionTimer = null;
 
+    async function canvasToOptimizedBlob(canvas) {
+      const pngBlob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+      if (pngBlob && pngBlob.size <= 850 * 1024) {
+        return { blob: pngBlob, filename: "border_prediction.png" };
+      }
+      let jpgBlob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.92));
+      if (jpgBlob && jpgBlob.size > 900 * 1024) {
+        jpgBlob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.82));
+      }
+      return { blob: jpgBlob || pngBlob, filename: jpgBlob ? "border_prediction.jpg" : "border_prediction.png" };
+    }
+
     function scheduleSyncPredictionCache() {
       if (!adminPassword || !state.selectedKey) return;
       const hasAnyGraph = TIER_DEFS.some((t) => state.graphCache.has(`${state.selectedKey}::${t.rank}`));
@@ -1494,12 +1506,12 @@ let syncPredictionTimer = null;
       syncPredictionTimer = setTimeout(async () => {
         try {
           const canvas = document.getElementById("reportCanvas");
-          const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+          const { blob, filename } = await canvasToOptimizedBlob(canvas);
           if (!blob) return;
 
           const formData = new FormData();
           formData.append("timeLabel", getLatestDataTimeLabel());
-          formData.append("image", blob, "border_prediction.png");
+          formData.append("image", blob, filename);
 
           await apiFetch("/api/admin/cache-prediction", {
             method: "POST",
