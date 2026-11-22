@@ -15,6 +15,7 @@ const {
   ButtonStyle,
   PermissionFlagsBits,
 } = require("discord.js");
+const { Client, GatewayIntentBits, MessageFlags } = require("discord.js");
 
 let createCanvas = null;
 let registerCustomFont = null;
@@ -2075,7 +2076,7 @@ client.on("interactionCreate", async (interaction) => {
     if (!canManageSubscribe(interaction)) {
       await interaction.reply({
         content: "⚠️ この設定は「サーバー管理」権限を持つメンバーのみ変更できます。",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -2098,7 +2099,7 @@ client.on("interactionCreate", async (interaction) => {
     if (!canManageSubscribe(interaction)) {
       await interaction.reply({
         content: "⚠️ この設定は「サーバー管理」権限を持つメンバーのみ変更できます。",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -2120,7 +2121,7 @@ client.on("interactionCreate", async (interaction) => {
       if (!canManageSubscribe(interaction)) {
         await interaction.reply({
           content: "⚠️ このコマンドは「サーバー管理」権限を持つメンバーのみ実行できます。",
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
         return;
       }
@@ -2139,7 +2140,7 @@ client.on("interactionCreate", async (interaction) => {
         }
         await interaction.reply({
           content: "✅ このチャンネルをボーダー予測の一斉通知先に登録しました（ミュートなし・24時間通知）。",
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
         return;
       }
@@ -2147,7 +2148,7 @@ client.on("interactionCreate", async (interaction) => {
       if (!guildId) {
         await interaction.reply({
           content: "✅ 通知先に登録しました（※時間帯ミュート設定はサーバー内チャンネルでのみ利用できます）。",
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
         return;
       }
@@ -2155,7 +2156,7 @@ client.on("interactionCreate", async (interaction) => {
       const uiPayload = buildSubscribeMuteUI(guildId);
       await interaction.reply({
         ...uiPayload,
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -2164,7 +2165,7 @@ client.on("interactionCreate", async (interaction) => {
       if (!canManageSubscribe(interaction)) {
         await interaction.reply({
           content: "⚠️ このコマンドは「サーバー管理」権限を持つメンバーのみ実行できます。",
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
         return;
       }
@@ -2174,7 +2175,7 @@ client.on("interactionCreate", async (interaction) => {
       await saveRedisJson("borderbot:subscriptions", memStore.subscriptions);
       await interaction.reply({
         content: "🔕 このチャンネルのボーダー予測通知を解除しました。",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -2184,7 +2185,7 @@ client.on("interactionCreate", async (interaction) => {
       if (!pred || !pred.imageBase64) {
         await interaction.reply({
           content: "⚠️ まだ予測画像がキャッシュされていません。",
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
         return;
       }
@@ -2204,7 +2205,7 @@ client.on("interactionCreate", async (interaction) => {
       if (!nb || !nb.text) {
         await interaction.reply({
           content: "⚠️ まだボーダーデータがキャッシュされていません。",
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
         return;
       }
@@ -2221,7 +2222,7 @@ client.on("interactionCreate", async (interaction) => {
       if ((!nb || !nb.text) && (!pred || !pred.imageBase64)) {
         await interaction.reply({
           content: "⚠️ まだボーダーデータおよび予測画像がキャッシュされていません。",
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
         return;
       }
@@ -2250,7 +2251,7 @@ client.on("interactionCreate", async (interaction) => {
     if (!interaction.replied && !interaction.deferred) {
       await interaction.reply({
         content: "⚠️ コマンドの実行中にエラーが発生しました。",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       }).catch(() => {});
     }
   }
