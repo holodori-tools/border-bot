@@ -2455,21 +2455,28 @@ let syncPredictionTimer = null;
 
       try {
         const canvas = document.getElementById("reportCanvas");
-        const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+        const { blob, filename } = await canvasToOptimizedBlob(canvas);
 
         const formData = new FormData();
         formData.append("nowBorderText", buildNowBorderText());
         formData.append("customText", document.getElementById("customTextInput").value.trim());
         formData.append("customTextPosition", document.getElementById("customTextPosSelect").value);
         if (blob) {
-          formData.append("image", blob, "border_prediction.png");
+          formData.append("image", blob, filename);
         }
 
         const res = await apiFetch("/api/admin/broadcast", {
           method: "POST",
           body: formData,
         });
-        const data = await res.json();
+        const rawText = await res.text();
+        let data;
+        try {
+          data = JSON.parse(rawText);
+        } catch (_) {
+          throw new Error(`サーバーから予期しない応答が返りました (HTTP ${res.status})`);
+        }
+
         if (data.ok) {
           showToast(data.message);
         } else {
@@ -2482,7 +2489,6 @@ let syncPredictionTimer = null;
         btn.textContent = "🚀 Botに反映（登録チャンネルへ一斉通知）";
       }
     }
-
     if (adminPassword) {
       document.getElementById("loginOverlay").style.display = "none";
       initializeApp();
