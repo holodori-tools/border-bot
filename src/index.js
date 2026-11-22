@@ -14,8 +14,8 @@ const {
   ButtonBuilder,
   ButtonStyle,
   PermissionFlagsBits,
+  MessageFlags,
 } = require("discord.js");
-const { Client, GatewayIntentBits, MessageFlags } = require("discord.js");
 
 let createCanvas = null;
 let registerCustomFont = null;
