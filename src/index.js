@@ -998,6 +998,7 @@ function computePredictionServer(targetItem, targetGraph, refPairs, targetRank, 
     },
     manualAdjustPt
   );
+}
 
 // =========================================================================
 // 6. サーバーサイド Canvas 描画（承認済み新レイアウト・トリプル 2160×820）
