@@ -193,7 +193,7 @@ async function registerSlashCommands() {
   }
 }
 
-client.once("ready", async () => {
+client.once("clientReady", async () => {
   console.log(`[Discord] ログイン完了: ${client.user.tag}`);
   await registerSlashCommands();
 });
@@ -468,6 +468,13 @@ app.post("/api/admin/broadcast", requireAdmin, upload.single("image"), async (re
   if (!memStore.nowBorderCache) {
     rebuildNowBorderCacheFromGraphs();
   }
+
+  const graphCount = Object.keys(memStore.graphs).length;
+  const hasPred = Boolean(memStore.predictionCache?.imageBase64);
+  const nbTime = memStore.nowBorderCache?.timeLabel || "未生成";
+  console.log(
+    `[Redis] 読込完了: 購読チャンネル ${memStore.subscriptions.length}ch / イベント ${memStore.events.length}件 / グラフ ${graphCount}件 / NowBorder(${nbTime}) / 予測画像(${hasPred ? "あり" : "なし"})`
+  );
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`[Web] 管理画面サーバー起動: http://0.0.0.0:${PORT}`);
