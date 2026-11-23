@@ -3,1317 +3,1284 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>ホロドリ ボーダー着地予測＆Discord配信管理パネル</title>
-  <!-- 共通予測・高解像度レポート描画エンジン（サーバー側と単一ソース共有） -->
-  <script src="/engine.js"></script>
+  <title>ボーダー予測Bot 管理コンソール</title>
   <style>
     :root {
-      --bg-main: #0b0f19;
-      --bg-panel: #131929;
-      --bg-card: #1a2236;
-      --border: rgba(255, 255, 255, 0.12);
-      --text-main: #f1f5f9;
-      --text-sub: #94a3b8;
-      --accent: #38bdf8;
-      --accent-hover: #0284c7;
-      --success: #10b981;
-      --warning: #f59e0b;
-      --danger: #ef4444;
+      --bg: #f1f5f9;
+      --surface: #ffffff;
+      --border: #cbd5e1;
+      --text: #0f172a;
+      --muted: #475569;
+      --accent: #1d4ed8;
+      --ok: #15803d;
+      --broadcast: #c2410c;
     }
-
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
-      background: var(--bg-main);
-      color: var(--text-main);
-      line-height: 1.5;
+      font-family: -apple-system, BlinkMacSystemFont, "Hiragino Kaku Gothic ProN", "Yu Gothic", "Noto Sans JP", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 14px;
     }
-
-    /* エンジン未読込時の警告バナー */
-    #engineErrorBanner {
-      display: none;
-      background: rgba(239, 68, 68, 0.18);
-      border: 1px solid var(--danger);
-      color: #fecaca;
-      padding: 12px 16px;
-      border-radius: 10px;
-      font-size: 13px;
-      margin-bottom: 16px;
-      text-align: left;
-    }
-
-    /* ログイン画面 */
-    #loginScreen {
-      min-height: 100vh;
+    .login-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.88);
       display: flex;
       align-items: center;
       justify-content: center;
-      padding: 20px;
-      background: radial-gradient(circle at 50% 20%, #1e293b 0%, #0b0f19 70%);
+      z-index: 100;
     }
-    .login-box {
+    .login-card {
+      background: #fff;
+      padding: 28px;
+      border-radius: 8px;
+      width: 340px;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.3);
+    }
+    .login-card h2 { margin: 0 0 12px; font-size: 18px; }
+    .login-card input {
       width: 100%;
-      max-width: 400px;
-      background: var(--bg-panel);
+      height: 38px;
+      padding: 0 12px;
       border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 32px 28px;
-      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.55);
-      text-align: center;
+      border-radius: 4px;
+      font-size: 15px;
+      margin-bottom: 12px;
     }
-    .login-box h1 {
-      margin: 0 0 8px;
-      font-size: 20px;
-      font-weight: 800;
-    }
-    .login-box p {
-      margin: 0 0 22px;
-      font-size: 13px;
-      color: var(--text-sub);
-    }
-    .login-box input {
-      width: 100%;
-      padding: 12px 14px;
-      border-radius: 10px;
-      border: 1px solid var(--border);
-      background: #0b0f19;
+    header {
+      background: #0f172a;
       color: #fff;
-      font-size: 16px;
-      margin-bottom: 14px;
-      outline: none;
-    }
-    .login-box input:focus { border-color: var(--accent); }
-
-    /* ボタン共通 */
-    button {
-      cursor: pointer;
-      border: none;
-      border-radius: 10px;
-      font-weight: 700;
-      font-size: 14px;
-      padding: 10px 16px;
-      transition: 0.15s ease;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 6px;
-    }
-    button:disabled { opacity: 0.5; cursor: not-allowed; }
-    .btn-primary { background: var(--accent); color: #082f49; }
-    .btn-primary:hover:not(:disabled) { background: #7dd3fc; }
-    .btn-success { background: var(--success); color: #022c22; }
-    .btn-success:hover:not(:disabled) { background: #34d399; }
-    .btn-warning { background: var(--warning); color: #271502; }
-    .btn-warning:hover:not(:disabled) { background: #fbbf24; }
-    .btn-secondary {
-      background: rgba(255, 255, 255, 0.08);
-      color: var(--text-main);
-      border: 1px solid var(--border);
-    }
-    .btn-secondary:hover:not(:disabled) { background: rgba(255, 255, 255, 0.14); }
-    .btn-full { width: 100%; }
-
-    /* メイン管理画面 */
-    #appScreen { display: none; padding-bottom: 48px; }
-
-    header.topbar {
-      background: var(--bg-panel);
-      border-bottom: 1px solid var(--border);
       padding: 14px 24px;
       display: flex;
       flex-wrap: wrap;
       align-items: center;
       justify-content: space-between;
       gap: 12px;
-      position: sticky;
-      top: 0;
-      z-index: 20;
     }
-    .topbar-title {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
-    .topbar-title h1 {
-      margin: 0;
-      font-size: 18px;
-      font-weight: 800;
-    }
-    .badge {
-      font-size: 12px;
-      font-weight: 700;
-      padding: 3px 10px;
+    header h1 { margin: 0; font-size: 17px; }
+    .status-pills { display: flex; flex-wrap: wrap; gap: 8px; font-size: 12px; }
+    .pill {
+      background: rgba(255,255,255,0.12);
+      padding: 4px 10px;
       border-radius: 999px;
-      background: rgba(56, 189, 248, 0.16);
-      color: var(--accent);
-      border: 1px solid rgba(56, 189, 248, 0.35);
     }
-    .topbar-actions {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 10px;
-    }
-
-    .container {
-      max-width: 1440px;
-      margin: 20px auto 0;
+    main {
+      max-width: 1360px;
+      margin: 20px auto 40px;
       padding: 0 20px;
       display: flex;
       flex-direction: column;
-      gap: 18px;
+      gap: 16px;
     }
-
-    /* ステータスバー */
-    .status-strip {
-      background: var(--bg-panel);
+    .panel {
+      background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 12px 18px;
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      font-size: 13px;
-    }
-    .status-meta {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 18px;
-      color: var(--text-sub);
-    }
-    .status-meta strong { color: var(--text-main); }
-
-    /* コントロール＆グリッド */
-    .grid-2 {
-      display: grid;
-      grid-template-columns: 1.15fr 0.85fr;
-      gap: 18px;
-    }
-    @media (max-width: 1024px) {
-      .grid-2 { grid-template-columns: 1fr; }
-    }
-
-    .card {
-      background: var(--bg-panel);
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      padding: 18px 20px;
-    }
-    .card-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 14px;
-      gap: 10px;
-      flex-wrap: wrap;
-    }
-    .card-header h2 {
-      margin: 0;
-      font-size: 16px;
-      font-weight: 800;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-
-    label.field-label {
-      display: block;
-      font-size: 12px;
-      font-weight: 700;
-      color: var(--text-sub);
-      margin-bottom: 6px;
-    }
-    select, input[type="text"], input[type="number"], textarea {
-      width: 100%;
-      background: #0b0f19;
-      color: var(--text-main);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 10px 12px;
-      font-size: 14px;
-      font-family: inherit;
-      outline: none;
-    }
-    select:focus, input:focus, textarea:focus { border-color: var(--accent); }
-    textarea { resize: vertical; line-height: 1.5; }
-
-    /* 3ランク個別カード＆手動補正 */
-    .tier-grid {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 14px;
-    }
-    @media (max-width: 960px) {
-      .tier-grid { grid-template-columns: 1fr; }
-    }
-    .tier-box {
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 14px 16px;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-    .tier-box-top {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
-    .tier-title {
-      font-size: 16px;
-      font-weight: 800;
-    }
-    .tier-rank-pill {
-      font-size: 12px;
-      font-weight: 800;
-      padding: 2px 8px;
       border-radius: 6px;
-      background: rgba(255, 255, 255, 0.1);
+      padding: 16px;
     }
-    .tier-pred-val {
-      font-size: 24px;
-      font-weight: 800;
-      color: #fbbf24;
+    .panel h2 {
+      margin: 0 0 12px;
+      font-size: 15px;
+      border-bottom: 1px solid #e2e8f0;
+      padding-bottom: 8px;
     }
-    .tier-sub-row {
-      display: flex;
-      justify-content: space-between;
-      font-size: 12px;
-      color: var(--text-sub);
-    }
-    .tier-sub-row span.val {
-      color: var(--text-main);
-      font-weight: 700;
-    }
-    .adj-control {
-      margin-top: 6px;
-      padding-top: 8px;
-      border-top: 1px solid rgba(255, 255, 255, 0.08);
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-    }
-    .adj-row {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-    .adj-row input[type="range"] {
-      flex: 1;
-      accent-color: var(--accent);
-    }
-    .adj-row input[type="number"] {
-      width: 115px;
-      padding: 6px 8px;
-      font-size: 13px;
-      text-align: right;
-    }
-
-    /* プレビューキャンバス */
-    .preview-wrap {
-      width: 100%;
-      overflow-x: auto;
-      background: #070a12;
+    .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    button, select {
+      height: 36px;
+      padding: 0 14px;
+      border-radius: 5px;
       border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 12px;
+      background: #fff;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:hover { background: #f8fafc; }
+    button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+    button.primary:hover { background: #1e40af; }
+    button.ok { background: var(--ok); color: #fff; border-color: var(--ok); }
+    button.ok:hover { background: #166534; }
+    button:disabled { opacity: 0.55; cursor: not-allowed; }
+    button.broadcast {
+      background: var(--broadcast);
+      color: #fff;
+      border-color: var(--broadcast);
+      height: 44px;
+      font-size: 15px;
+      padding: 0 24px;
+    }
+    button.broadcast:hover { background: #9a3412; }
+    button.broadcast:disabled { opacity: 0.5; cursor: not-allowed; }
+    .toast {
+      padding: 10px 14px;
+      border-radius: 5px;
+      background: #dcfce7;
+      border: 1px solid #86efac;
+      color: #166534;
+      font-weight: 600;
+      display: none;
+    }
+    .toast.show { display: block; }
+    .preview-grid {
+      display: grid;
+      grid-template-columns: 1.75fr 1fr;
+      gap: 16px;
+      align-items: start;
+    }
+    .preview-img-wrap {
+      background: #090c15;
+      border-radius: 6px;
+      padding: 10px;
       text-align: center;
     }
-    canvas#tripleCanvas {
+    canvas#reportCanvas {
       max-width: 100%;
       height: auto;
-      border-radius: 8px;
+      border-radius: 4px;
       display: block;
       margin: 0 auto;
     }
-
-    /* 配信コントロール */
-    .broadcast-actions {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 10px;
-      margin-top: 12px;
+    .text-preview-box {
+      background: #1e293b;
+      color: #f8fafc;
+      padding: 14px;
+      border-radius: 6px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      white-space: pre-wrap;
+      line-height: 1.6;
+      font-size: 14px;
     }
-    @media (max-width: 640px) {
-      .broadcast-actions { grid-template-columns: 1fr; }
-    }
-    .checkbox-row {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-size: 13px;
-      color: var(--text-main);
+    .diag-preview-box {
       margin-top: 10px;
-      cursor: pointer;
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      border-radius: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      color: #334155;
+      line-height: 1.6;
     }
-    .checkbox-row input[type="checkbox"] {
+    .slot-editor {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 10px;
+      padding: 12px;
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 6px;
+    }
+    .custom-msg-box {
+      margin-top: 12px;
+      padding: 12px;
+      background: #fffbeb;
+      border: 1px solid #fde68a;
+      border-radius: 6px;
+    }
+    .mute-opt-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      font-weight: 700;
+      color: #334155;
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      border-radius: 5px;
+      padding: 0 12px;
+      height: 44px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .mute-opt-label input[type="checkbox"] {
       width: 16px;
       height: 16px;
+      cursor: pointer;
       accent-color: var(--accent);
     }
-
-    /* トースト通知 */
-    #toast {
-      position: fixed;
-      bottom: 22px;
-      right: 22px;
-      background: #1e293b;
-      color: #fff;
-      border: 1px solid rgba(56, 189, 248, 0.5);
-      padding: 12px 18px;
-      border-radius: 12px;
-      font-size: 14px;
-      font-weight: 700;
-      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.55);
-      z-index: 100;
-      opacity: 0;
-      transform: translateY(12px);
-      pointer-events: none;
-      transition: 0.2s ease;
-    }
-    #toast.show {
-      opacity: 1;
-      transform: translateY(0);
-    }
-
-    /* カスタム確認モーダル（alert/confirm代替） */
-    #confirmModal {
-      display: none;
-      position: fixed;
-      inset: 0;
-      background: rgba(0, 0, 0, 0.68);
-      z-index: 200;
-      align-items: center;
-      justify-content: center;
-      padding: 20px;
-    }
-    #confirmModal.show {
-      display: flex;
-    }
-    .modal-card {
+    textarea {
       width: 100%;
-      max-width: 420px;
-      background: var(--bg-panel);
+      height: 84px;
+      font-family: inherit;
+      font-size: 13px;
+      padding: 8px 10px;
       border: 1px solid var(--border);
-      border-radius: 14px;
-      padding: 22px 24px;
-      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.65);
+      border-radius: 4px;
+      resize: vertical;
     }
-    .modal-card h3 {
-      margin: 0 0 10px;
-      font-size: 17px;
-      font-weight: 800;
-    }
-    .modal-card p {
-      margin: 0 0 20px;
-      font-size: 14px;
-      color: var(--text-sub);
-    }
-    .modal-actions {
-      display: flex;
-      justify-content: flex-end;
-      gap: 10px;
+    @media (max-width: 960px) {
+      .preview-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
 <body>
-
-  <!-- 1. ログイン画面 -->
-  <div id="loginScreen">
-    <div class="login-box">
-      <div id="engineErrorBanner"></div>
-      <h1>ホロドリ ボーダー管理パネル</h1>
-      <p>管理者パスワードを入力してください</p>
-      <input type="password" id="passwordInput" placeholder="パスワード" autocomplete="current-password" />
-      <button id="loginBtn" class="btn-primary btn-full">ログイン</button>
-    </div>
+  <!-- ログインオーバーレイ -->
+  <div class="login-overlay" id="loginOverlay">
+    <form class="login-card" id="loginForm" onsubmit="event.preventDefault(); doLogin();">
+      <h2>管理コンソール ログイン</h2>
+      <input type="password" id="pwInput" placeholder="パスワードを入力" autocomplete="current-password" required />
+      <button type="submit" id="loginBtn" class="primary" style="width:100%;">ログイン</button>
+      <div id="loginErr" style="color:#dc2626;font-size:12px;margin-top:8px;"></div>
+    </form>
   </div>
 
-  <!-- 2. 管理ダッシュボード -->
-  <div id="appScreen">
-    <header class="topbar">
-      <div class="topbar-title">
-        <h1>ホロドリ ボーダー予測 ＆ Discord配信管理</h1>
-        <span class="badge" id="subCountBadge">購読: - ch</span>
-      </div>
-      <div class="topbar-actions">
-        <button id="fetchApiBtn" class="btn-primary">🔄 APIから最新データ取得</button>
-        <button id="reloadAllBtn" class="btn-secondary">サーバー再同期</button>
-        <button id="logoutBtn" class="btn-secondary">ログアウト</button>
-      </div>
-    </header>
-
-    <div class="container">
-      <!-- ステータスバー -->
-      <div class="status-strip">
-        <div id="statusMessage" style="font-weight:700; color: var(--accent);">準備完了</div>
-        <div class="status-meta">
-          <span>自動API更新: <strong id="lastAutoFetchLabel">-</strong></span>
-          <span>手動更新: <strong id="lastManualUpdateLabel">-</strong></span>
-          <span>キャッシュ時刻: <strong id="cacheTimeLabel">-</strong></span>
-        </div>
-      </div>
-
-      <!-- イベント選択 ＆ 3ランク予測・手動補正 -->
-      <div class="card">
-        <div class="card-header">
-          <h2>📊 対象イベント・チャプター選択 ＆ 着地予測モデル</h2>
-          <div style="display:flex; gap:8px;">
-            <button id="saveAdjBtn" class="btn-secondary">補正値を保存</button>
-            <button id="resetAdjBtn" class="btn-secondary">補正リセット</button>
-          </div>
-        </div>
-
-        <div style="margin-bottom: 16px;">
-          <label class="field-label" for="eventSelect">表示・配信するイベント / チャプター</label>
-          <select id="eventSelect"></select>
-        </div>
-
-        <div class="tier-grid" id="tierCardsContainer"></div>
-      </div>
-
-      <!-- プレビュー画像 ＆ Discord一斉配信パネル -->
-      <div class="grid-2">
-        <!-- 左：トリプル比較画像プレビュー -->
-        <div class="card">
-          <div class="card-header">
-            <h2>🖼️ Discord配信用 予測画像プレビュー (2160×820)</h2>
-            <button id="downloadImgBtn" class="btn-secondary">画像を保存</button>
-          </div>
-          <div class="preview-wrap">
-            <canvas id="tripleCanvas" width="2160" height="820"></canvas>
-          </div>
-        </div>
-
-        <!-- 右：テキスト編集 ＆ 一斉配信・キャッシュ更新 -->
-        <div class="card">
-          <div class="card-header">
-            <h2>📣 Discord 一斉通知 ＆ キャッシュ更新</h2>
-            <button id="copyTextBtn" class="btn-secondary">テキストコピー</button>
-          </div>
-
-          <div style="margin-bottom: 12px;">
-            <label class="field-label" for="nowBorderTextarea">現在ボーダー本文（/nowborder・/border・定時通知共通）</label>
-            <textarea id="nowBorderTextarea" rows="5"></textarea>
-          </div>
-
-          <div style="margin-bottom: 12px;">
-            <label class="field-label" for="customTextInput">追加メッセージ（任意・一斉通知時のみ添付）</label>
-            <textarea id="customTextInput" rows="3" placeholder="例：終盤スパートに入りました！ラスト3時間は30分ごとに通知します。"></textarea>
-          </div>
-
-          <div style="display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px;">
-            <div style="min-width: 180px;">
-              <label class="field-label" for="customPosSelect">追加メッセージの配置</label>
-              <select id="customPosSelect">
-                <option value="below">画像・本文の下に送信</option>
-                <option value="above">本文の上に連結して送信</option>
-              </select>
-            </div>
-
-            <label class="checkbox-row">
-              <input type="checkbox" id="respectMuteCheck" checked />
-              <span>サーバー別の通知ミュート時間帯を尊重する</span>
-            </label>
-          </div>
-
-          <div class="broadcast-actions">
-            <button id="updateCacheOnlyBtn" class="btn-warning">💾 キャッシュのみ更新（通知なし）</button>
-            <button id="broadcastBtn" class="btn-success">🚀 キャッシュ更新 ＋ Discord一斉通知</button>
-          </div>
-        </div>
-      </div>
+  <!-- ヘッダー（v6 状況適応型・動的ベースライン版） -->
+  <header>
+    <h1>イベントボーダー予測Bot 管理コンソール（v6 状況適応型・動的ベースライン版）</h1>
+    <div class="status-pills">
+      <span class="pill" id="statArchive">GitHub過去データ: 読込中...</span>
+      <span class="pill" id="statEvents">イベント一覧キャッシュ: -</span>
+      <span class="pill" id="statSubs">通知購読チャンネル: -</span>
     </div>
-  </div>
+  </header>
 
-  <!-- 確認モーダル -->
-  <div id="confirmModal">
-    <div class="modal-card">
-      <h3>一斉通知の確認</h3>
-      <p id="confirmModalBody"></p>
-      <div class="modal-actions">
-        <button id="confirmCancelBtn" class="btn-secondary">キャンセル</button>
-        <button id="confirmOkBtn" class="btn-success">送信する</button>
+  <main>
+    <div class="toast" id="toastBox"></div>
+
+    <!-- Step 1: API取得 & クリップボード自動取込 -->
+    <section class="panel">
+      <h2>1. 最新データ取込（タブを開いて Ctrl+A → Ctrl+C で戻ると自動反映）</h2>
+      <div class="row" style="margin-bottom:10px;">
+        <label style="font-weight:700;">対象イベント:</label>
+        <select id="targetEventSelect" style="min-width:280px;"></select>
+        <button class="ok" id="fetchApiBtn" onclick="fetchFromServerApi()">🌐 APIから最新データを取得</button>
+        <button onclick="openListApi()">① イベント一覧API（新イベント時のみ）</button>
+        <button onclick="loadArchiveFromGithub(true)">GitHub過去データ再読込</button>
       </div>
-    </div>
-  </div>
+      <div class="row">
+        <span style="font-weight:700;">② グラフAPIを開く:</span>
+        <button class="primary" onclick="openGraphApi(1000)">T1,000（ドリーム級）</button>
+        <button class="primary" onclick="openGraphApi(5000)">T5,000（ダイヤ級）</button>
+        <button class="primary" onclick="openGraphApi(10000)">T10,000（プラチナ級）</button>
+        <button class="primary" onclick="openGraphApi(100)">T100</button>
+        <button class="primary" onclick="openGraphApi(500)">T500</button>
+        <button class="primary" onclick="openGraphApi(50000)">T50,000</button>
+        <button class="ok" onclick="readClipboardNow(false)">📋 クリップボードから手動読込</button>
+      </div>
+      <div id="cachedRanksInfo" style="margin-top:8px;font-size:12px;color:var(--muted);"></div>
+      <details style="margin-top:10px;">
+        <summary style="cursor:pointer;font-size:12px;color:var(--muted);">スマホ等でクリップボード自動読取が使えない場合（JSON手動貼付）</summary>
+        <div style="margin-top:8px;">
+          <textarea id="manualJsonArea" style="font-family:monospace;font-size:12px;" placeholder='{"events":[...]} または {"tier":[[...]]}'></textarea>
+          <button class="primary" style="margin-top:6px;" onclick="submitManualJson()">JSONを反映</button>
+        </div>
+      </details>
+    </section>
 
-  <div id="toast"></div>
+    <!-- Step 2: 配信レイアウト設定 -->
+    <section class="panel">
+      <h2>2. 配信画像レイアウト ＆ 任意お知らせテキスト設定</h2>
+      <div class="row">
+        <label style="font-weight:700;">画像レイアウト:</label>
+        <select id="modeSelect" onchange="onModeOrThemeChanged()">
+          <option value="triple" selected>トリプル（3枠横並び / 2160×820 ワイド）</option>
+          <option value="dual">デュアル（2枠比較 / 1600×900）</option>
+          <option value="single">シングル（1枠詳細 / 1600×900）</option>
+        </select>
+        <label style="font-weight:700;">テーマ色:</label>
+        <select id="themeSelect" onchange="onModeOrThemeChanged()">
+          <option value="auto" selected>順位連動（自動）</option>
+          <option value="rainbow">虹色</option>
+          <option value="purple">紫・輝く</option>
+          <option value="platinum">プラチナ</option>
+          <option value="gold">ゴールド</option>
+          <option value="silver">シルバー</option>
+          <option value="bronze">ブロンズ</option>
+        </select>
+      </div>
+      <div class="slot-editor" id="slotEditor"></div>
 
+      <!-- ランク別 5万pt単位 手動補正パネル -->
+      <div id="manualAdjustPanel" style="margin-top:12px;padding:12px 14px;background:#f8fafc;border:1px solid #cbd5e1;border-radius:6px;">
+        <div style="font-size:13px;font-weight:700;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;">
+          <span>🎚️ 着地予測 手動微調整（5万pt単位 / Shift+クリックで25万pt単位）</span>
+          <button type="button" onclick="resetAllManualAdjust()" style="height:28px;padding:0 10px;font-size:12px;">全ランク自動に戻す</button>
+        </div>
+        <div id="manualAdjustRows" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px;"></div>
+      </div>
+
+      <div class="custom-msg-box">
+        <div class="row" style="justify-content:space-between;margin-bottom:8px;">
+          <label style="font-weight:700;">📢 任意テキスト（お知らせ・補足コメントなど / 空欄なら送信しません）:</label>
+          <div class="row">
+            <label style="font-size:12px;font-weight:700;">送信位置:</label>
+            <select id="customTextPosSelect" onchange="updateTextPreviews()">
+              <option value="below" selected>BorderPrediction（画像）の下に2通目として送信</option>
+              <option value="above">NowBorder（テキスト）の上に配置して送信</option>
+            </select>
+          </div>
+        </div>
+        <textarea
+          id="customTextInput"
+          placeholder="例：※本日は最終日のため、21時にも臨時更新を行います！"
+          oninput="updateTextPreviews()"
+        ></textarea>
+      </div>
+    </section>
+
+    <!-- Step 3: プレビュー確認 & Bot一斉通知 -->
+    <section class="panel">
+      <div class="row" style="justify-content:space-between;margin-bottom:12px;">
+        <h2 style="border:none;margin:0;padding:0;">3. 配信内容プレビュー ＆ Bot一斉通知</h2>
+        <div class="row">
+          <label class="mute-opt-label" title="チェック時、各サーバーの /subscribe mutetime で設定された時間帯のチャンネルには送信をスキップします">
+            <input type="checkbox" id="chkRespectMuteTime" checked />
+            <span>サーバーごとのミュート時間設定を適用する</span>
+          </label>
+          <button class="ok" id="dataOnlyBtn" style="height:44px;padding:0 18px;" onclick="triggerBroadcast(false)">🔄 データのみ更新（通知は送信しない）</button>
+          <button class="broadcast" id="broadcastBtn" onclick="triggerBroadcast(true)">🚀 Botに反映（登録チャンネルへ一斉通知）</button>
+        </div>
+      </div>
+      <div class="preview-grid">
+        <div>
+          <div style="font-size:12px;font-weight:700;margin-bottom:6px;color:var(--muted);">
+            ▼ BorderPrediction（添付画像プレビュー・この画像がそのまま送信されます）
+          </div>
+          <div class="preview-img-wrap">
+            <canvas id="reportCanvas" width="2160" height="820"></canvas>
+          </div>
+        </div>
+        <div>
+          <div style="font-size:12px;font-weight:700;margin-bottom:6px;color:var(--muted);">
+            ▼ 送信テキスト構成プレビュー
+          </div>
+          <div class="text-preview-box" id="messageFlowPreview">読込中...</div>
+          <div class="diag-preview-box" id="diagTagsPreview">予測診断ログ: データ待機中...</div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- 共通計算・描画エンジン -->
+  <script src="/engine.js"></script>
   <script>
-    (() => {
-      // -----------------------------------------------------------------------
-      // 0. 共通エンジン（window.HolodoriBorderEngine）の検証とフォールバック
-      // -----------------------------------------------------------------------
-      const Engine = window.HolodoriBorderEngine;
-      const engineErrorBanner = document.getElementById("engineErrorBanner");
+    const Engine = window.HolodoriBorderEngine;
+    if (!Engine) {
+      const errEl = document.getElementById("loginErr");
+      if (errEl) {
+        errEl.textContent = "エラー: /engine.js が読み込まれていません。サーバーの静的ファイル配信設定を確認してください。";
+      }
+      throw new Error("window.HolodoriBorderEngine is undefined");
+    }
 
-      if (!Engine) {
-        if (engineErrorBanner) {
-          engineErrorBanner.style.display = "block";
-          engineErrorBanner.innerHTML =
-            "<strong>⚠️ 共通エンジン (/engine.js) の読み込みに失敗しました。</strong><br>" +
-            "サーバー側で <code>public/engine.js</code> が配信されているか確認してください（<code>/engine.js</code> が 404 でないか確認）。";
-        }
-        // ログインボタン自体は反応するよう最小限の診断ハンドラを登録
-        const fallbackLogin = async () => {
-          const pw = document.getElementById("passwordInput")?.value || "";
-          const res = await fetch("/api/admin/login", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ password: pw }),
-          });
-          if (!res.ok) {
-            if (engineErrorBanner) {
-              engineErrorBanner.innerHTML += "<br>※ パスワード認証も失敗しました。";
-            }
-            return;
-          }
-          sessionStorage.setItem("holodori_admin_pw", pw);
-          if (engineErrorBanner) {
-            engineErrorBanner.innerHTML =
-              "<strong>✅ パスワード認証は成功しましたが、/engine.js が読み込めないため画面を描画できません。</strong><br>" +
-              "サーバーの <code>public/engine.js</code> 配置と静的ファイル配信設定を確認して再読み込みしてください。";
-          }
-        };
-        document.getElementById("loginBtn")?.addEventListener("click", fallbackLogin);
+    const {
+      TIER_DEFS,
+      formatNumber,
+      formatJST,
+      formatRoundedJstTime,
+      buildNowBorderPayloadFromGraphs,
+      computePrediction,
+      createReportRenderer,
+    } = Engine;
+
+    const API_BASE = "https://api.holodori.best/api/events";
+    const GITHUB_ARCHIVE_BASE = "https://raw.githubusercontent.com/holodori-tools/event-borders/main/archive";
+
+    // 高解像度レポートレンダラー（背景レイヤーオフスクリーンキャッシュ内蔵）
+    const reportRenderer = createReportRenderer();
+
+    let adminPassword = sessionStorage.getItem("admin_pw") || "";
+    let lastClipboardText = "";
+    let pendingHint = { key: null, rank: null };
+
+    const state = {
+      archiveItems: [],
+      events: [],
+      eligibleItems: [],
+      graphCache: new Map(), // `${key}::${rank}` -> graphData
+      manualAdjustments: {}, // { [eventKey]: { 1000: -50000, ... } }
+      selectedKey: null,
+      mode: "triple",
+      themeOverride: "auto",
+      single: { key: null, rank: 5000 },
+      dual: [
+        { key: null, rank: 1000 },
+        { key: null, rank: 5000 },
+      ],
+      triple: [
+        { key: null, rank: 1000 },
+        { key: null, rank: 5000 },
+        { key: null, rank: 10000 },
+      ],
+    };
+
+    function showToast(msg) {
+      const el = document.getElementById("toastBox");
+      el.textContent = msg;
+      el.classList.add("show");
+      clearTimeout(el._t);
+      el._t = setTimeout(() => el.classList.remove("show"), 6000);
+    }
+
+    function getEventCategory(ev) {
+      if (!ev || !ev.hasData) return null;
+      const name = ev.name || "";
+      if (ev.type === 2 || name.includes("スポットライト")) return "spotlight";
+      if ((ev.type === 1 && ev.isSongScore === false) || name.includes("ポイント")) return "point";
+      return null;
+    }
+
+    // =========================================================================
+    // 1. 認証 ＆ サーバー通信
+    // =========================================================================
+    async function apiFetch(url, options = {}) {
+      const headers = { ...(options.headers || {}), "x-admin-password": adminPassword };
+      if (options.body && typeof options.body === "object" && !(options.body instanceof FormData)) {
+        headers["Content-Type"] = "application/json";
+        options.body = JSON.stringify(options.body);
+      }
+      const res = await fetch(url, { ...options, headers });
+      if (res.status === 401) {
+        sessionStorage.removeItem("admin_pw");
+        document.getElementById("loginOverlay").style.display = "flex";
+        throw new Error("Unauthorized");
+      }
+      return res;
+    }
+
+    async function doLogin() {
+      const pwInput = document.getElementById("pwInput");
+      const btn = document.getElementById("loginBtn");
+      const errEl = document.getElementById("loginErr");
+      const pw = pwInput ? pwInput.value : "";
+
+      if (!pw) {
+        errEl.textContent = "パスワードを入力してください。";
         return;
       }
 
-      const { TIER_DEFS } = Engine;
-      const GITHUB_ARCHIVE_BASE = "https://raw.githubusercontent.com/holodori-tools/event-borders/main/archive";
-
-      // 共通高解像度レンダラー生成（背景オフスクリーンキャッシュ＆キャンバス再利用内蔵）
-      const reportRenderer = Engine.createReportRenderer({
-        fontFamily: '"Hiragino Kaku Gothic ProN", "Yu Gothic", "Meiryo", sans-serif',
-        monoFamily: '"Hiragino Kaku Gothic ProN", "Yu Gothic", "Meiryo", monospace',
-      });
-
-      // アプリケーション状態
-      const state = {
-        password: sessionStorage.getItem("holodori_admin_pw") || "",
-        events: [],
-        graphs: {},
-        archiveItems: [],
-        archiveGraphs: {},
-        manualAdjustments: {},
-        guildSettings: {},
-        subscriptionCount: 0,
-        lastManualUpdateAt: 0,
-        lastAutoFetchAt: 0,
-        nowBorderCache: null,
-        predictionCacheMeta: null,
-        allTargets: [],
-        selectedKey: "",
-        predsByRank: {},
-        textManuallyEdited: false,
-      };
-
-      // DOM要素
-      const el = {
-        loginScreen: document.getElementById("loginScreen"),
-        appScreen: document.getElementById("appScreen"),
-        passwordInput: document.getElementById("passwordInput"),
-        loginBtn: document.getElementById("loginBtn"),
-        logoutBtn: document.getElementById("logoutBtn"),
-        fetchApiBtn: document.getElementById("fetchApiBtn"),
-        reloadAllBtn: document.getElementById("reloadAllBtn"),
-        subCountBadge: document.getElementById("subCountBadge"),
-        statusMessage: document.getElementById("statusMessage"),
-        lastAutoFetchLabel: document.getElementById("lastAutoFetchLabel"),
-        lastManualUpdateLabel: document.getElementById("lastManualUpdateLabel"),
-        cacheTimeLabel: document.getElementById("cacheTimeLabel"),
-        eventSelect: document.getElementById("eventSelect"),
-        tierCardsContainer: document.getElementById("tierCardsContainer"),
-        saveAdjBtn: document.getElementById("saveAdjBtn"),
-        resetAdjBtn: document.getElementById("resetAdjBtn"),
-        tripleCanvas: document.getElementById("tripleCanvas"),
-        downloadImgBtn: document.getElementById("downloadImgBtn"),
-        nowBorderTextarea: document.getElementById("nowBorderTextarea"),
-        copyTextBtn: document.getElementById("copyTextBtn"),
-        customTextInput: document.getElementById("customTextInput"),
-        customPosSelect: document.getElementById("customPosSelect"),
-        respectMuteCheck: document.getElementById("respectMuteCheck"),
-        updateCacheOnlyBtn: document.getElementById("updateCacheOnlyBtn"),
-        broadcastBtn: document.getElementById("broadcastBtn"),
-        toast: document.getElementById("toast"),
-        confirmModal: document.getElementById("confirmModal"),
-        confirmModalBody: document.getElementById("confirmModalBody"),
-        confirmCancelBtn: document.getElementById("confirmCancelBtn"),
-        confirmOkBtn: document.getElementById("confirmOkBtn"),
-      };
-
-      let toastTimer = null;
-      function showToast(msg) {
-        el.toast.textContent = msg;
-        el.toast.classList.add("show");
-        clearTimeout(toastTimer);
-        toastTimer = setTimeout(() => el.toast.classList.remove("show"), 3400);
+      errEl.textContent = "";
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = "ログイン中...";
       }
 
-      function setStatus(msg, color = "var(--accent)") {
-        el.statusMessage.textContent = msg;
-        el.statusMessage.style.color = color;
-      }
-
-      function askConfirmModal(message) {
-        return new Promise((resolve) => {
-          el.confirmModalBody.textContent = message;
-          el.confirmModal.classList.add("show");
-
-          const cleanup = (result) => {
-            el.confirmModal.classList.remove("show");
-            el.confirmOkBtn.removeEventListener("click", onOk);
-            el.confirmCancelBtn.removeEventListener("click", onCancel);
-            resolve(result);
-          };
-          const onOk = () => cleanup(true);
-          const onCancel = () => cleanup(false);
-
-          el.confirmOkBtn.addEventListener("click", onOk);
-          el.confirmCancelBtn.addEventListener("click", onCancel);
+      try {
+        const res = await fetch("/api/admin/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password: pw }),
         });
-      }
 
-      async function apiFetch(url, options = {}) {
-        const headers = {
-          ...(options.headers || {}),
-          "x-admin-password": state.password,
-        };
-        const res = await fetch(url, { ...options, headers });
-        if (res.status === 401) {
-          sessionStorage.removeItem("holodori_admin_pw");
-          state.password = "";
-          el.appScreen.style.display = "none";
-          el.loginScreen.style.display = "flex";
-          throw new Error("認証エラー：再ログインしてください。");
+        if (res.ok) {
+          adminPassword = pw;
+          sessionStorage.setItem("admin_pw", pw);
+          document.getElementById("loginOverlay").style.display = "none";
+          await initializeApp();
+        } else if (res.status === 401) {
+          errEl.textContent = "パスワードが違います。";
+        } else {
+          errEl.textContent = `サーバーエラーが発生しました (HTTP ${res.status})`;
         }
-        return res;
+      } catch (err) {
+        errEl.textContent = `通信または初期化エラー: ${err.message}`;
+        console.error("Login error:", err);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = "ログイン";
+        }
       }
+    }
+    window.doLogin = doLogin;
 
-      // -----------------------------------------------------------------------
-      // 1. GitHub過去アーカイブ読込
-      // -----------------------------------------------------------------------
-      async function loadArchiveFromGithub() {
+    async function initializeApp() {
+      await Promise.all([loadArchiveFromGithub(false), loadServerBootstrap()]);
+      rebuildCombinedItems();
+      renderAllUI();
+    }
+
+    async function loadServerBootstrap() {
+      const res = await apiFetch("/api/admin/bootstrap");
+      const data = await res.json();
+      if (Array.isArray(data.events)) {
+        state.events = data.events;
+      }
+      if (data.graphs && typeof data.graphs === "object") {
+        for (const [k, g] of Object.entries(data.graphs)) {
+          if (g && Array.isArray(g.tier)) {
+            state.graphCache.set(k, g);
+          }
+        }
+      }
+      if (data.manualAdjustments && typeof data.manualAdjustments === "object") {
+        state.manualAdjustments = data.manualAdjustments;
+      }
+      document.getElementById("statEvents").textContent = `イベント一覧キャッシュ: ${state.events.length}件`;
+      document.getElementById("statSubs").textContent = `通知購読チャンネル: ${data.subscriptionCount}ch`;
+    }
+
+    async function fetchFromServerApi() {
+      const btn = document.getElementById("fetchApiBtn");
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = "API取得中...";
+      }
+      try {
+        const res = await apiFetch("/api/admin/fetch-api", { method: "POST" });
+        const rawText = await res.text();
+        let data;
         try {
-          const res = await fetch(`${GITHUB_ARCHIVE_BASE}/index.json?t=${Math.floor(Date.now() / 60000)}`, {
-            cache: "no-store",
-          });
-          if (!res.ok) return;
-          const manifest = await res.json();
-          const entries = Array.isArray(manifest) ? manifest : Array.isArray(manifest.items) ? manifest.items : [];
+          data = JSON.parse(rawText);
+        } catch (_) {
+          throw new Error(`サーバーから予期しない応答が返りました (HTTP ${res.status})`);
+        }
 
-          const items = [];
-          const graphs = {};
+        if (!res.ok || !data.ok) {
+          throw new Error(data.error || `API取得に失敗しました (HTTP ${res.status})`);
+        }
 
-          for (const ent of entries) {
-            const tierEntries = [];
-            for (const [k, val] of Object.entries(ent)) {
-              const m = /^t(\d+)$/i.exec(k);
-              if (m && typeof val === "string" && val.trim() !== "") {
-                tierEntries.push({ rankHint: Number(m[1]), file: val.trim() });
-              }
-            }
-            if (tierEntries.length === 0 && typeof ent.file === "string") {
-              tierEntries.push({ rankHint: ent.rank || 5000, file: ent.file.trim() });
-            }
+        await loadServerBootstrap();
+        rebuildCombinedItems();
 
-            const displayName = ent.tag || ent.name || ent.chapterId || ent.eventId || "archive";
-            const key = ent.eventId && ent.chapterId ? `${ent.eventId}::${ent.chapterId}` : `archive::${displayName}`;
+        const targetKey = data.result && data.result.targetKey;
+        if (targetKey && state.eligibleItems.some((it) => it.key === targetKey)) {
+          state.selectedKey = targetKey;
+          state.single.key = targetKey;
+          state.dual.forEach((s) => (s.key = targetKey));
+          state.triple.forEach((s) => (s.key = targetKey));
+        }
 
-            const fetched = await Promise.all(
-              tierEntries.map(async (te) => {
-                try {
-                  const gRes = await fetch(`${GITHUB_ARCHIVE_BASE}/${te.file}`);
-                  if (!gRes.ok) return null;
-                  const graph = await gRes.json();
-                  if (!graph || !Array.isArray(graph.tier) || graph.tier.length === 0) return null;
-                  return { actualRank: Number(graph.rank) || te.rankHint, graph };
-                } catch (_) {
-                  return null;
-                }
-              })
-            );
+        renderAllUI();
 
-            let repGraph = null;
-            for (const item of fetched) {
-              if (!item) continue;
-              graphs[`${key}::${item.actualRank}`] = item.graph;
-              if (!repGraph) repGraph = item.graph;
-            }
-
-            if (repGraph) {
-              const durH = (repGraph.endTime - repGraph.startTime) / 3600000;
-              const cat = ent.category || "spotlight";
-              items.push({
-                key,
-                eventId: ent.eventId || "archive",
-                chapterId: ent.chapterId || displayName,
-                category: cat,
-                catLabel: cat === "point" ? "ポイントイベント" : "スポットライト",
-                eventName: displayName,
-                chapterName: null,
-                shortLabel: displayName,
-                startTime: repGraph.startTime,
-                endTime: repGraph.endTime,
-                durationH: durH,
-                live: false,
-                isArchive: true,
-              });
-            }
-          }
-
-          state.archiveItems = items;
-          state.archiveGraphs = graphs;
-        } catch (err) {
-          console.warn("[Archive] 読込エラー:", err);
+        if (data.result && data.result.fetched === false) {
+          showToast("現在開催中の対象イベントがないためスキップしました");
+        } else {
+          showToast("APIから最新データを取得し、予測・現在ボーダーを更新しました");
+        }
+      } catch (err) {
+        showToast("API取得エラー: " + err.message);
+        console.error("fetchFromServerApi error:", err);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = "🌐 APIから最新データを取得";
         }
       }
+    }
+    window.fetchFromServerApi = fetchFromServerApi;
 
-      // -----------------------------------------------------------------------
-      // 2. イベント＆チャプター一覧構築
-      // -----------------------------------------------------------------------
-      function buildTargetList() {
-        const list = [];
-        const seen = new Set();
-
-        // 1. Redis上の最新・開催中イベント群
-        for (const ev of state.events) {
-          if (!ev || !ev.eventId || ev.isSongScore) continue;
-          const isRelay = Number(ev.type) === 2 || (Array.isArray(ev.chapters) && ev.chapters.length > 1);
-          const category = isRelay ? "spotlight" : "point";
-          const catLabel = isRelay ? "スポットライト" : "ポイントイベント";
-
-          if (Array.isArray(ev.chapters) && ev.chapters.length > 0) {
-            for (const chId of ev.chapters) {
-              const key = `${ev.eventId}::${chId}`;
-              if (seen.has(key)) continue;
-              const meta = ev.chapterMeta?.[chId] || {};
-              const repGraph =
-                state.graphs[`${key}::5000`] ||
-                state.graphs[`${key}::1000`] ||
-                state.graphs[`${key}::10000`];
-              const st = meta.startTime || repGraph?.startTime || ev.startTime;
-              const et = meta.endTime || repGraph?.endTime || ev.endTime;
-              if (!st || !et) continue;
-
-              const now = Date.now();
-              const live = now >= st && now <= et;
-              const chName = meta.name || null;
-              const shortCh = meta.shortName || chId;
-
-              seen.add(key);
-              list.push({
-                key,
-                eventId: ev.eventId,
-                chapterId: chId,
-                category,
-                catLabel,
-                eventName: ev.name || ev.eventId,
-                chapterName: chName,
-                shortLabel: chName ? `${ev.name} / ${shortCh}` : ev.name || ev.eventId,
-                startTime: st,
-                endTime: et,
-                durationH: (et - st) / 3600000,
-                live,
-                hasGraphs: Boolean(repGraph),
-              });
-            }
-          } else {
-            const prefixCandidates = new Set();
-            for (const gKey of Object.keys(state.graphs)) {
-              if (gKey.startsWith(`${ev.eventId}::`)) {
-                prefixCandidates.add(gKey.replace(/::\d+$/, ""));
-              }
-            }
-            if (prefixCandidates.size === 0 && ev.startTime && ev.endTime) {
-              prefixCandidates.add(`${ev.eventId}::default`);
-            }
-            for (const key of prefixCandidates) {
-              if (seen.has(key)) continue;
-              const repGraph =
-                state.graphs[`${key}::5000`] ||
-                state.graphs[`${key}::1000`] ||
-                state.graphs[`${key}::10000`];
-              const st = repGraph?.startTime || ev.startTime;
-              const et = repGraph?.endTime || ev.endTime;
-              if (!st || !et) continue;
-
-              const now = Date.now();
-              seen.add(key);
-              list.push({
-                key,
-                eventId: ev.eventId,
-                chapterId: key.split("::")[1] || "default",
-                category,
-                catLabel,
-                eventName: ev.name || ev.eventId,
-                chapterName: null,
-                shortLabel: ev.name || ev.eventId,
-                startTime: st,
-                endTime: et,
-                durationH: (et - st) / 3600000,
-                live: now >= st && now <= et,
-                hasGraphs: Boolean(repGraph),
-              });
-            }
-          }
-        }
-
-        // 2. graphs にのみ存在するキー補完
-        const graphPrefixes = new Set(Object.keys(state.graphs).map((k) => k.replace(/::\d+$/, "")));
-        for (const key of graphPrefixes) {
-          if (seen.has(key)) continue;
-          const repGraph =
-            state.graphs[`${key}::5000`] ||
-            state.graphs[`${key}::1000`] ||
-            state.graphs[`${key}::10000`];
-          if (!repGraph) continue;
-          const durH = (repGraph.endTime - repGraph.startTime) / 3600000;
-          const isSpot = durH <= 80;
-          seen.add(key);
-          list.push({
-            key,
-            eventId: repGraph.eventId || key.split("::")[0],
-            chapterId: repGraph.chapterId || key.split("::")[1] || "default",
-            category: isSpot ? "spotlight" : "point",
-            catLabel: isSpot ? "スポットライト" : "ポイントイベント",
-            eventName: repGraph.eventId || key,
-            chapterName: null,
-            shortLabel: key,
-            startTime: repGraph.startTime,
-            endTime: repGraph.endTime,
-            durationH: durH,
-            live: Date.now() >= repGraph.startTime && Date.now() <= repGraph.endTime,
-            hasGraphs: true,
-          });
-        }
-
-        // 3. 過去アーカイブ補完
-        for (const aItem of state.archiveItems) {
-          if (seen.has(aItem.key)) continue;
-          seen.add(aItem.key);
-          list.push({ ...aItem, hasGraphs: true });
-        }
-
-        // ソート：開催中 > グラフデータ有り新しい順 > 開始日時新しい順
-        list.sort((a, b) => {
-          if (a.live !== b.live) return a.live ? -1 : 1;
-          if (Boolean(a.hasGraphs) !== Boolean(b.hasGraphs)) return a.hasGraphs ? -1 : 1;
-          return (b.startTime || 0) - (a.startTime || 0);
+    // =========================================================================
+    // 2. GitHub 過去完了データの直接読込
+    // =========================================================================
+    async function loadArchiveFromGithub(notify = false) {
+      const statEl = document.getElementById("statArchive");
+      statEl.textContent = "GitHub過去データ: 読込中...";
+      try {
+        const res = await fetch(`${GITHUB_ARCHIVE_BASE}/index.json?t=${Math.floor(Date.now() / 60000)}`, {
+          cache: "no-store",
         });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const manifest = await res.json();
+        const entries = Array.isArray(manifest) ? manifest : Array.isArray(manifest.items) ? manifest.items : [];
 
-        state.allTargets = list;
+        const newArchiveItems = [];
+        let loadedFiles = 0;
 
-        // プルダウン描画
-        el.eventSelect.innerHTML = "";
-        for (const item of list) {
-          const opt = document.createElement("option");
-          opt.value = item.key;
-          const statusTag = item.live ? "🔴開催中" : item.isArchive ? "📦過去アーカイブ" : "⚪終了";
-          opt.textContent = `[${statusTag}] ${item.shortLabel} (${Engine.formatJST(item.startTime, true)}〜)`;
-          el.eventSelect.appendChild(opt);
-        }
-
-        if (!state.selectedKey || !list.some((i) => i.key === state.selectedKey)) {
-          state.selectedKey = list[0]?.key || "";
-        }
-        el.eventSelect.value = state.selectedKey;
-      }
-
-      // -----------------------------------------------------------------------
-      // 3. 予測計算（Engine.computePrediction）＆ UI・Canvas更新
-      // -----------------------------------------------------------------------
-      function recalculateAndRender() {
-        const target = state.allTargets.find((t) => t.key === state.selectedKey);
-        if (!target) return;
-
-        const predsByRank = {};
-        const mergedGraphsForTarget = {};
-        const adjMap = state.manualAdjustments[target.key] || {};
-
-        for (const tierDef of TIER_DEFS) {
-          const gKey = `${target.key}::${tierDef.rank}`;
-          const targetGraph = state.graphs[gKey] || state.archiveGraphs[gKey] || null;
-          if (targetGraph) {
-            mergedGraphsForTarget[gKey] = targetGraph;
+        for (const ent of entries) {
+          const tierEntries = [];
+          for (const [k, val] of Object.entries(ent)) {
+            const m = /^t(\d+)$/i.exec(k);
+            if (m && typeof val === "string" && val.trim() !== "") {
+              tierEntries.push({ rankHint: Number(m[1]), file: val.trim() });
+            }
+          }
+          if (tierEntries.length === 0 && typeof ent.file === "string") {
+            tierEntries.push({ rankHint: ent.rank || 5000, file: ent.file.trim() });
           }
 
-          if (!targetGraph || !Array.isArray(targetGraph.tier) || targetGraph.tier.length === 0) {
-            predsByRank[tierDef.rank] = null;
-            continue;
+          const displayName = ent.tag || ent.name || ent.chapterId || ent.eventId || "archive";
+          const key = ent.eventId && ent.chapterId ? `${ent.eventId}::${ent.chapterId}` : `archive::${displayName}`;
+
+          const fetched = await Promise.all(
+            tierEntries.map(async (te) => {
+              try {
+                const gRes = await fetch(`${GITHUB_ARCHIVE_BASE}/${te.file}`);
+                if (!gRes.ok) return null;
+                const graph = await gRes.json();
+                if (!graph || !Array.isArray(graph.tier) || graph.tier.length === 0) return null;
+                return { actualRank: Number(graph.rank) || te.rankHint, graph };
+              } catch (_) {
+                return null;
+              }
+            })
+          );
+
+          let repGraph = null;
+          for (const item of fetched) {
+            if (!item) continue;
+            state.graphCache.set(`${key}::${item.actualRank}`, item.graph);
+            loadedFiles++;
+            if (!repGraph) repGraph = item.graph;
           }
 
-          // 参照過去データ収集
-          const refPairs = [];
-          for (const aItem of state.archiveItems) {
-            if (aItem.key === target.key || aItem.category !== target.category) continue;
-            const g = state.archiveGraphs[`${aItem.key}::${tierDef.rank}`];
-            if (g) refPairs.push({ item: aItem, graph: g });
-          }
-          for (const [k, gVal] of Object.entries(state.graphs)) {
-            if (!k.endsWith(`::${tierDef.rank}`) || k.startsWith(`${target.key}::`)) continue;
-            if (!gVal || !Array.isArray(gVal.tier) || gVal.tier.length < 15) continue;
-            const gProg =
-              (gVal.tier[gVal.tier.length - 1][0] - gVal.startTime) /
-              Math.max(1, gVal.endTime - gVal.startTime);
-            if (gProg < 0.98) continue;
-            const prefix = k.replace(/::\d+$/, "");
-            refPairs.push({
-              item: {
-                key: prefix,
-                eventId: gVal.eventId || prefix,
-                chapterId: gVal.chapterId || prefix,
-                category: target.category,
-                durationH: (gVal.endTime - gVal.startTime) / 3600000,
-                live: false,
-              },
-              graph: gVal,
+          if (repGraph) {
+            const durH = (repGraph.endTime - repGraph.startTime) / 3600000;
+            const isFinished =
+              repGraph.tier[repGraph.tier.length - 1][0] >= repGraph.endTime - 15 * 60 * 1000;
+            const cat = ent.category || "spotlight";
+            const catLabel = cat === "point" ? "ポイントイベント" : "スポットライト";
+
+            newArchiveItems.push({
+              key,
+              eventId: ent.eventId || "archive",
+              chapterId: ent.chapterId || displayName,
+              category: cat,
+              catLabel,
+              label: `[過去] ${displayName} (${formatJST(repGraph.startTime, true)}〜, ${Math.round(durH)}h)`,
+              shortLabel: displayName,
+              startTime: repGraph.startTime,
+              endTime: repGraph.endTime,
+              durationH: durH,
+              live: !isFinished,
+              isArchive: true,
             });
           }
+        }
 
-          predsByRank[tierDef.rank] = Engine.computePrediction(
-            target,
-            targetGraph,
-            refPairs,
-            tierDef.rank,
-            Number(adjMap[tierDef.rank]) || 0
+        state.archiveItems = newArchiveItems;
+        statEl.textContent = `GitHub過去データ: ${newArchiveItems.length}イベント (${loadedFiles}件)`;
+        if (notify) {
+          rebuildCombinedItems();
+          renderAllUI();
+          showToast(`GitHubから過去データを再読込しました（${newArchiveItems.length}イベント）`);
+        }
+      } catch (err) {
+        statEl.textContent = "GitHub過去データ: 読込失敗";
+        console.error(err);
+      }
+    }
+
+    function rebuildCombinedItems() {
+      const now = Date.now();
+      const map = new Map();
+
+      for (const aItem of state.archiveItems) {
+        map.set(aItem.key, aItem);
+      }
+
+      for (const ev of state.events) {
+        const cat = getEventCategory(ev);
+        if (!cat) continue;
+        const chapters =
+          Array.isArray(ev.chapters) && ev.chapters.length > 0
+            ? ev.chapters
+            : Object.keys(ev.chapterMeta || {});
+
+        for (const cid of chapters) {
+          const cm = (ev.chapterMeta && ev.chapterMeta[cid]) || {};
+          const st = cm.startTime || ev.startTime;
+          const et = cm.endTime || ev.endTime;
+          if (!st || !et) continue;
+
+          const isChapterLive = Boolean(ev.live && (ev.activeChapterId === cid || (now >= st && now <= et)));
+          const isStarted = st <= now || !ev.live;
+          if (!isStarted && !isChapterLive) continue;
+
+          const key = `${ev.eventId}::${cid}`;
+          const existingArch = map.get(key);
+          const evDisplayName = ev.name || (existingArch ? existingArch.eventName : ev.eventId);
+          const chDisplayName = cm.name || null;
+          const chName = chDisplayName ? ` / ${chDisplayName}` : existingArch ? ` / ${existingArch.shortLabel}` : "";
+          const shortName = cm.shortName || chDisplayName || (existingArch ? existingArch.shortLabel : evDisplayName);
+          const catLabel = cat === "spotlight" ? "スポットライト" : "ポイントイベント";
+          const durH = (et - st) / 3600000;
+
+          map.set(key, {
+            key,
+            eventId: ev.eventId,
+            chapterId: cid,
+            category: cat,
+            catLabel,
+            eventName: evDisplayName,
+            chapterName: chDisplayName,
+            label: `${catLabel}：${evDisplayName}${chName} (${formatJST(st, true)}〜, ${Math.round(durH)}h)${isChapterLive ? " [開催中]" : ""}`,
+            shortLabel: shortName,
+            startTime: st,
+            endTime: et,
+            durationH: durH,
+            live: isChapterLive,
+            isArchive: Boolean(existingArch),
+          });
+        }
+      }
+
+      const items = Array.from(map.values());
+      items.sort((a, b) => b.startTime - a.startTime);
+      state.eligibleItems = items;
+
+      if (!state.selectedKey || !items.some((x) => x.key === state.selectedKey)) {
+        const liveWithGraph = items.find(
+          (x) => x.live && Array.from(state.graphCache.keys()).some((k) => k.startsWith(`${x.key}::`))
+        );
+        const liveAny = items.find((x) => x.live);
+        state.selectedKey = (liveWithGraph || liveAny || items[0])?.key || null;
+      }
+
+      syncSlotsToSelectedIfUnset();
+    }
+
+    function syncSlotsToSelectedIfUnset() {
+      const def = state.selectedKey;
+      if (!def) return;
+      if (!state.single.key) state.single.key = def;
+      state.dual.forEach((s) => { if (!s.key) s.key = def; });
+      state.triple.forEach((s) => { if (!s.key) s.key = def; });
+    }
+
+    // =========================================================================
+    // 3. API開き ＆ クリップボード自動取込
+    // =========================================================================
+    function openListApi() {
+      pendingHint = { key: null, rank: null };
+      window.open(`${API_BASE}/list?region=jp&language=jpn`, "_blank");
+    }
+
+    function openGraphApi(rankVal) {
+      const evKey = document.getElementById("targetEventSelect").value;
+      const item = state.eligibleItems.find((x) => x.key === evKey);
+      const eid = item ? item.eventId : "marathon_event-relay-004";
+      const cid = item ? item.chapterId : "marathon_event-relay-004-chapter-03";
+      pendingHint = { key: evKey, rank: rankVal };
+      window.open(
+        `${API_BASE}/graph?region=jp&rank=${rankVal}&border=true&music=false&event_id=${encodeURIComponent(eid)}&chapter_id=${encodeURIComponent(cid)}`,
+        "_blank"
+      );
+    }
+
+    function detectRank(parsed) {
+      if (parsed && Number(parsed.rank) > 0) return Number(parsed.rank);
+      if (pendingHint && pendingHint.rank) return Number(pendingHint.rank);
+      return 5000;
+    }
+
+    async function ingestParsedJson(parsed) {
+      if (!parsed || typeof parsed !== "object") return false;
+
+      if (Array.isArray(parsed.events)) {
+        state.events = parsed.events;
+        rebuildCombinedItems();
+        renderAllUI();
+        document.getElementById("statEvents").textContent = `イベント一覧キャッシュ: ${parsed.events.length}件`;
+        showToast(`イベント一覧を取り込みキャッシュしました（${parsed.events.length}件）`);
+        apiFetch("/api/admin/cache-events", { method: "POST", body: { events: parsed.events } }).catch(() => {});
+        return true;
+      }
+
+      if (Array.isArray(parsed.tier) && parsed.startTime && parsed.endTime) {
+        const gRank = detectRank(parsed);
+        let matched = state.eligibleItems.find(
+          (it) => Math.abs(it.startTime - parsed.startTime) < 120000 && Math.abs(it.endTime - parsed.endTime) < 120000
+        );
+        if (!matched && pendingHint.key) {
+          matched = state.eligibleItems.find((it) => it.key === pendingHint.key);
+        }
+        if (!matched) {
+          const tempKey = `imported::${parsed.startTime}_${parsed.endTime}`;
+          matched = {
+            key: tempKey,
+            eventId: "imported",
+            chapterId: `${parsed.startTime}`,
+            category: "spotlight",
+            catLabel: "取込イベント",
+            label: `取込データ (${formatJST(parsed.startTime, true)}〜)`,
+            shortLabel: `イベント(${formatJST(parsed.startTime, true)})`,
+            startTime: parsed.startTime,
+            endTime: parsed.endTime,
+            durationH: (parsed.endTime - parsed.startTime) / 3600000,
+            live: parsed.tier[parsed.tier.length - 1][0] < parsed.endTime - 60000,
+          };
+          state.eligibleItems.unshift(matched);
+        }
+
+        const cacheKey = `${matched.key}::${gRank}`;
+        const graphObj = { ...parsed, rank: gRank };
+        state.graphCache.set(cacheKey, graphObj);
+        state.selectedKey = matched.key;
+        state.single.key = matched.key;
+        state.dual.forEach((s) => (s.key = matched.key));
+        state.triple.forEach((s) => (s.key = matched.key));
+
+        renderAllUI();
+        const latestVal = parsed.tier[parsed.tier.length - 1][1];
+        showToast(`「${matched.shortLabel}」(T${gRank.toLocaleString()}) を取り込みました（最新: ${formatNumber(latestVal)} pt）`);
+        apiFetch("/api/admin/cache-graph", { method: "POST", body: { cacheKey, graph: graphObj } }).catch(() => {});
+        return true;
+      }
+
+      return false;
+    }
+
+    async function readClipboardNow(silent = false) {
+      if (!navigator.clipboard || !navigator.clipboard.readText) return;
+      try {
+        const raw = (await navigator.clipboard.readText()).trim();
+        if (!raw || !raw.startsWith("{")) return;
+        if (silent && raw === lastClipboardText) return;
+        const parsed = JSON.parse(raw);
+        if (await ingestParsedJson(parsed)) {
+          lastClipboardText = raw;
+        }
+      } catch (_) {}
+    }
+
+    window.addEventListener("focus", () => {
+      if (adminPassword) readClipboardNow(true);
+    });
+
+    async function submitManualJson() {
+      const raw = document.getElementById("manualJsonArea").value.trim();
+      if (!raw) return;
+      try {
+        const parsed = JSON.parse(raw);
+        if (await ingestParsedJson(parsed)) {
+          lastClipboardText = raw;
+          document.getElementById("manualJsonArea").value = "";
+        } else {
+          alert("有効な events または tier データが含まれていません。");
+        }
+      } catch (e) {
+        alert("JSON構文エラー: " + e.message);
+      }
+    }
+
+    // =========================================================================
+    // 4. NowBorder テキスト自動生成（engine.js 共通モジュール委譲）
+    // =========================================================================
+    function getLatestDataTimeLabel() {
+      const payload = buildNowBorderPayloadFromGraphs(state.graphCache, state.selectedKey);
+      if (payload && payload.timeLabel) return payload.timeLabel;
+      return formatRoundedJstTime(Date.now());
+    }
+
+    function buildNowBorderText() {
+      const payload = buildNowBorderPayloadFromGraphs(state.graphCache, state.selectedKey);
+      if (payload && payload.text) return payload.text;
+      const lines = TIER_DEFS.map((t) => `${t.label} 未取得`);
+      return [`最終更新(${formatRoundedJstTime(Date.now())})時点のボーダーです！`, ...lines].join("\n");
+    }
+
+    function updateTextPreviews() {
+      const nowBorderText = buildNowBorderText();
+      const customText = document.getElementById("customTextInput").value.trim();
+      const pos = document.getElementById("customTextPosSelect").value;
+
+      let preview = "";
+      if (customText && pos === "above") {
+        preview = `【1通目（テキスト＋画像）】\n${customText}\n\n${nowBorderText}\n\n[添付: BorderPrediction画像]`;
+      } else if (customText && pos === "below") {
+        preview = `【1通目（本体）】\n${nowBorderText}\n[添付: BorderPrediction画像]\n\n--------------------\n【2通目（画像の下に連続送信）】\n${customText}`;
+      } else {
+        preview = `【1通目】\n${nowBorderText}\n\n[添付: BorderPrediction画像]`;
+      }
+      document.getElementById("messageFlowPreview").textContent = preview;
+      updateDiagPreview();
+    }
+
+    function updateDiagPreview() {
+      const diagEl = document.getElementById("diagTagsPreview");
+      const targetKey = state.selectedKey;
+      if (!targetKey) {
+        diagEl.textContent = "予測診断ログ: イベント未選択";
+        return;
+      }
+      const lines = [];
+      for (const tier of TIER_DEFS) {
+        const pred = getPredictionFor(targetKey, tier.rank);
+        if (pred && pred.metaInfo) {
+          const m = pred.metaInfo;
+          const adjTxt = pred.manualAdjustPt
+            ? ` / 手動補正: ${pred.manualAdjustPt > 0 ? "+" : ""}${Math.round(pred.manualAdjustPt / 10000)}万pt`
+            : "";
+          const tenMinTxt = m.w10mPct > 0
+            ? ` / 10分EMA:${Math.round(m.pace10m / 10000).toLocaleString()}万pt/h(比重${m.w10mPct}%)`
+            : "";
+          const spurtTxt = m.spurtBoost > 1.001
+            ? ` / 条件スパート:+${((m.spurtBoost - 1) * 100).toFixed(1)}%`
+            : "";
+          const simTxt = m.topMatchName && m.topMatchName !== "-"
+            ? ` / 最類似:${m.topMatchName}(一致度${Math.round((m.topShapeSim || 0) * 100)}%)`
+            : "";
+          lines.push(
+            `・${tier.label}(T${tier.rank.toLocaleString()}): ${m.zoneLabel} / 時速重み${m.wPacePct}% / 勢い係数${m.liveHeat.toFixed(2)}x${tenMinTxt}${spurtTxt}${simTxt}${adjTxt}`
           );
+        } else {
+          lines.push(`・${tier.label}(T${tier.rank.toLocaleString()}): データ未取得`);
         }
+      }
+      diagEl.innerHTML = `<strong>▼ v6 状況適応型・動的ベースライン診断ログ（管理画面確認用）</strong><br>${lines.join("<br>")}`;
+    }
 
-        state.predsByRank = predsByRank;
+    // =========================================================================
+    // 5. 着地予測計算（engine.js 共通モジュール委譲）
+    // =========================================================================
+    function getPredictionFor(eventKey, targetRank) {
+      const targetItem = state.eligibleItems.find((x) => x.key === eventKey);
+      if (!targetItem) return null;
+      const targetGraph = state.graphCache.get(`${targetItem.key}::${targetRank}`);
+      if (!targetGraph) return null;
 
-        // 3ランクカードUI更新
-        renderTierCards(target, predsByRank);
+      const refPairs = [];
+      for (const cand of state.eligibleItems) {
+        if (cand.key === targetItem.key || cand.live) continue;
+        if (cand.category !== targetItem.category) continue;
+        const g = state.graphCache.get(`${cand.key}::${targetRank}`);
+        if (g) refPairs.push({ item: cand, graph: g });
+      }
 
-        // NowBorderテキスト自動生成（Engine.buildNowBorderPayloadFromGraphs を使用）
-        if (!state.textManuallyEdited) {
-          const built = Engine.buildNowBorderPayloadFromGraphs(mergedGraphsForTarget, target.key);
-          if (built && built.text) {
-            el.nowBorderTextarea.value = built.text;
-          } else if (state.nowBorderCache?.text) {
-            el.nowBorderTextarea.value = state.nowBorderCache.text;
-          } else {
-            el.nowBorderTextarea.value = "";
-          }
-        }
+      const adjPt = Number((state.manualAdjustments[eventKey] || {})[targetRank]) || 0;
+      return computePrediction(targetItem, targetGraph, refPairs, targetRank, adjPt);
+    }
 
-        // トリプル比較画像描画（Engine.createReportRenderer を使用）
+    // =========================================================================
+    // 6. 高解像度 Canvas 描画（engine.js 共通レンダラー委譲）
+    // =========================================================================
+    let syncPredictionTimer = null;
+
+    async function canvasToOptimizedBlob(canvas) {
+      const pngBlob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+      if (pngBlob && pngBlob.size <= 850 * 1024) {
+        return { blob: pngBlob, filename: "border_prediction.png" };
+      }
+      let jpgBlob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.92));
+      if (jpgBlob && jpgBlob.size > 900 * 1024) {
+        jpgBlob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.82));
+      }
+      return { blob: jpgBlob || pngBlob, filename: jpgBlob ? "border_prediction.jpg" : "border_prediction.png" };
+    }
+
+    function scheduleSyncPredictionCache() {
+      if (!adminPassword || !state.selectedKey) return;
+      const hasAnyGraph = TIER_DEFS.some((t) => state.graphCache.has(`${state.selectedKey}::${t.rank}`));
+      if (!hasAnyGraph) return;
+
+      clearTimeout(syncPredictionTimer);
+      syncPredictionTimer = setTimeout(async () => {
+        try {
+          const canvas = document.getElementById("reportCanvas");
+          const { blob, filename } = await canvasToOptimizedBlob(canvas);
+          if (!blob) return;
+
+          const formData = new FormData();
+          formData.append("timeLabel", getLatestDataTimeLabel());
+          formData.append("image", blob, filename);
+
+          await apiFetch("/api/admin/cache-prediction", {
+            method: "POST",
+            body: formData,
+          });
+        } catch (_) {}
+      }, 1200);
+    }
+
+    function renderActiveCanvas() {
+      const canvas = document.getElementById("reportCanvas");
+      const nowMs = Date.now();
+
+      if (state.mode === "single") {
+        const item = state.eligibleItems.find((x) => x.key === state.single.key) || null;
+        const pred = getPredictionFor(state.single.key, state.single.rank);
+        reportRenderer.renderReport({
+          mode: "single",
+          themeOverride: state.themeOverride,
+          singleSlot: { item, rank: state.single.rank, pred },
+          targetCanvas: canvas,
+          nowMs,
+        });
+      } else if (state.mode === "dual") {
+        const slots = state.dual.map((slot) => ({
+          item: state.eligibleItems.find((x) => x.key === slot.key) || null,
+          rank: slot.rank,
+          pred: getPredictionFor(slot.key, slot.rank),
+        }));
+        const primaryItem =
+          slots[0]?.item || state.eligibleItems.find((x) => x.key === state.selectedKey) || null;
+        reportRenderer.renderReport({
+          mode: "dual",
+          themeOverride: state.themeOverride,
+          slots,
+          primaryItem,
+          targetCanvas: canvas,
+          nowMs,
+        });
+      } else {
+        const slots = state.triple.map((slot) => ({
+          item: state.eligibleItems.find((x) => x.key === slot.key) || null,
+          rank: slot.rank,
+          pred: getPredictionFor(slot.key, slot.rank),
+        }));
+        const primaryItem =
+          slots[0]?.item || state.eligibleItems.find((x) => x.key === state.selectedKey) || null;
         reportRenderer.renderReport({
           mode: "triple",
-          primaryItem: target,
-          slots: TIER_DEFS.map((t) => ({
-            item: target,
-            rank: t.rank,
-            pred: predsByRank[t.rank] || null,
-          })),
-          targetCanvas: el.tripleCanvas,
+          themeOverride: state.themeOverride,
+          slots,
+          primaryItem,
+          targetCanvas: canvas,
+          nowMs,
         });
       }
 
-      function renderTierCards(target, predsByRank) {
-        el.tierCardsContainer.innerHTML = "";
-        const adjMap = state.manualAdjustments[target.key] || {};
+      scheduleSyncPredictionCache();
+    }
 
-        for (const tierDef of TIER_DEFS) {
-          const pred = predsByRank[tierDef.rank];
-          const theme = Engine.getTierTheme(tierDef.rank);
-          const rankTitle = Engine.getTierRankTitle(tierDef.rank) || tierDef.label;
-          const curAdj = Number(adjMap[tierDef.rank]) || 0;
-
-          const box = document.createElement("div");
-          box.className = "tier-box";
-          box.style.borderColor = theme.borderStops[0];
-
-          if (!pred) {
-            box.innerHTML = `
-              <div class="tier-box-top">
-                <span class="tier-title" style="color:${theme.primary}">${rankTitle}</span>
-                <span class="tier-rank-pill">T${tierDef.rank.toLocaleString()}</span>
-              </div>
-              <div style="color:var(--text-sub); font-size:13px; padding:18px 0;">データ未取得</div>
-            `;
-            el.tierCardsContainer.appendChild(box);
-            continue;
-          }
-
-          box.innerHTML = `
-            <div class="tier-box-top">
-              <span class="tier-title" style="color:${theme.primary}">${rankTitle}</span>
-              <span class="tier-rank-pill">T${tierDef.rank.toLocaleString()}</span>
-            </div>
-            <div class="tier-pred-val" style="color:${theme.forecast}">
-              ${Engine.formatNumber(pred.centralFinal)} pt
-            </div>
-            <div class="tier-sub-row">
-              <span>現在スコア</span>
-              <span class="val">${Engine.formatNumber(pred.currentScore)} pt</span>
-            </div>
-            <div class="tier-sub-row">
-              <span>予測レンジ</span>
-              <span class="val">${Engine.formatNumber(pred.minFinal)} 〜 ${Engine.formatNumber(pred.maxFinal)}</span>
-            </div>
-            <div class="tier-sub-row">
-              <span>直近時速 / 類似度</span>
-              <span class="val">${Engine.formatNumber(pred.recentPace)} pt/h (${Math.round((pred.metaInfo?.topShapeSim || 0) * 100)}%)</span>
-            </div>
-            <div class="adj-control">
-              <div class="tier-sub-row">
-                <span>手動着地補正 (pt)</span>
-                <span class="val" style="color:${curAdj !== 0 ? "#38bdf8" : "var(--text-sub)"}">
-                  ${curAdj > 0 ? "+" : ""}${Engine.formatNumber(curAdj)} pt
-                </span>
-              </div>
-              <div class="adj-row">
-                <input type="range" min="-500000" max="500000" step="5000" value="${curAdj}" data-rank="${tierDef.rank}" class="adj-slider" />
-                <input type="number" step="5000" value="${curAdj}" data-rank="${tierDef.rank}" class="adj-num" />
-              </div>
-            </div>
-          `;
-          el.tierCardsContainer.appendChild(box);
-        }
-
-        // 補正スライダー＆数値入力イベント
-        el.tierCardsContainer.querySelectorAll(".adj-slider, .adj-num").forEach((inp) => {
-          inp.addEventListener("input", (e) => {
-            const r = e.target.dataset.rank;
-            const val = Number(e.target.value) || 0;
-            if (!state.manualAdjustments[target.key]) state.manualAdjustments[target.key] = {};
-            state.manualAdjustments[target.key][r] = val;
-            recalculateAndRender();
-          });
-        });
+    // =========================================================================
+    // 7. UI 描画・コントロール制御・一斉配信
+    // =========================================================================
+    function renderAllUI() {
+      const evSel = document.getElementById("targetEventSelect");
+      evSel.innerHTML = "";
+      for (const item of state.eligibleItems) {
+        const opt = document.createElement("option");
+        opt.value = item.key;
+        opt.textContent = item.label;
+        evSel.appendChild(opt);
       }
+      if (state.selectedKey) evSel.value = state.selectedKey;
 
-      // -----------------------------------------------------------------------
-      // 4. CanvasをDiscord投稿用Blob（850KB以下）へ変換
-      // -----------------------------------------------------------------------
-      function exportCanvasBlob() {
-        return new Promise((resolve) => {
-          el.tripleCanvas.toBlob((pngBlob) => {
-            if (pngBlob && pngBlob.size <= 850 * 1024) {
-              resolve({ blob: pngBlob, filename: "border_prediction.png" });
-            } else {
-              el.tripleCanvas.toBlob(
-                (jpgBlob) => resolve({ blob: jpgBlob, filename: "border_prediction.jpg" }),
-                "image/jpeg",
-                0.90
-              );
-            }
-          }, "image/png");
-        });
-      }
-
-      // -----------------------------------------------------------------------
-      // 5. サーバー同期・API取得・配信アクション
-      // -----------------------------------------------------------------------
-      async function bootstrapDashboard() {
-        setStatus("サーバーデータを読み込み中...");
-        const [bootRes] = await Promise.all([
-          apiFetch("/api/admin/bootstrap"),
-          state.archiveItems.length === 0 ? loadArchiveFromGithub() : Promise.resolve(),
-        ]);
-        const data = await bootRes.json();
-
-        state.events = data.events || [];
-        state.graphs = data.graphs || {};
-        state.manualAdjustments = data.manualAdjustments || {};
-        state.guildSettings = data.guildSettings || {};
-        state.subscriptionCount = Number(data.subscriptionCount) || 0;
-        state.lastManualUpdateAt = Number(data.lastManualUpdateAt) || 0;
-        state.lastAutoFetchAt = Number(data.lastAutoFetchAt) || 0;
-        state.nowBorderCache = data.nowBorderCache || null;
-        state.predictionCacheMeta = data.predictionCacheMeta || null;
-
-        el.subCountBadge.textContent = `購読: ${state.subscriptionCount} ch`;
-        el.lastAutoFetchLabel.textContent = state.lastAutoFetchAt ? Engine.formatJST(state.lastAutoFetchAt) : "未実行";
-        el.lastManualUpdateLabel.textContent = state.lastManualUpdateAt ? Engine.formatJST(state.lastManualUpdateAt) : "未実行";
-        el.cacheTimeLabel.textContent = state.nowBorderCache?.timeLabel || state.predictionCacheMeta?.timeLabel || "未生成";
-
-        buildTargetList();
-        recalculateAndRender();
-        setStatus("最新データと同期しました。", "var(--success)");
-      }
-
-      async function handleFetchNewApi() {
-        el.fetchApiBtn.disabled = true;
-        setStatus("holodori-border.com APIから最新ボーダーを取得中...");
-        try {
-          const res = await apiFetch("/api/admin/fetch-api", { method: "POST" });
-          const data = await res.json();
-          if (!data.ok) throw new Error(data.error || "API取得失敗");
-
-          state.events = data.events || state.events;
-          state.graphs = data.graphs || state.graphs;
-          state.nowBorderCache = data.nowBorderCache || state.nowBorderCache;
-          state.lastAutoFetchAt = Date.now();
-          state.textManuallyEdited = false;
-
-          el.lastAutoFetchLabel.textContent = Engine.formatJST(state.lastAutoFetchAt);
-          if (state.nowBorderCache?.timeLabel) {
-            el.cacheTimeLabel.textContent = state.nowBorderCache.timeLabel;
-          }
-
-          if (data.result?.targetKey) {
-            state.selectedKey = data.result.targetKey;
-          }
-          buildTargetList();
-          recalculateAndRender();
-
-          if (data.result?.fetched) {
-            setStatus(`API取得完了: ${data.result.shortLabel} (${data.result.timeLabel})`, "var(--success)");
-            showToast("✅ APIから最新ボーダーを取得しました");
-          } else {
-            setStatus("現在開催中の対象イベント/チャプターはありません。", "var(--warning)");
-            showToast("⚠️ 開催中の対象イベントが見つかりませんでした");
-          }
-        } catch (err) {
-          setStatus(`エラー: ${err.message}`, "var(--danger)");
-          showToast(`❌ ${err.message}`);
-        } finally {
-          el.fetchApiBtn.disabled = false;
+      const ranks = [];
+      for (const k of state.graphCache.keys()) {
+        if (k.startsWith(`${state.selectedKey}::`)) {
+          ranks.push(Number(k.split("::").pop()));
         }
       }
+      document.getElementById("cachedRanksInfo").textContent =
+        ranks.length > 0
+          ? `選択中イベントの取得済み順位: ${ranks.sort((a, b) => a - b).map((r) => "T" + r.toLocaleString()).join(", ")}`
+          : "選択中イベントのグラフデータはまだ取得されていません。";
 
-      async function submitCacheOrBroadcast(shouldNotify) {
-        if (shouldNotify) {
-          const ok = await askConfirmModal(
-            `登録済みの全チャンネル（${state.subscriptionCount}ch）にボーダー予測を一斉送信します。よろしいですか？`
+      renderSlotEditor();
+      renderManualAdjustPanel();
+      updateTextPreviews();
+      renderActiveCanvas();
+    }
+
+    function getEventAdjustMap(eventKey) {
+      if (!eventKey) return {};
+      if (!state.manualAdjustments[eventKey]) state.manualAdjustments[eventKey] = {};
+      return state.manualAdjustments[eventKey];
+    }
+
+    function stepManualAdjust(rank, deltaMan, ev) {
+      if (!state.selectedKey) return;
+      const mult = ev && ev.shiftKey ? 5 : 1;
+      const map = getEventAdjustMap(state.selectedKey);
+      const curPt = Number(map[rank]) || 0;
+      map[rank] = curPt + deltaMan * mult * 10000;
+      renderAllUI();
+    }
+
+    function setManualAdjustMan(rank, valStr) {
+      if (!state.selectedKey) return;
+      const man = Number(valStr);
+      const map = getEventAdjustMap(state.selectedKey);
+      map[rank] = Number.isFinite(man) ? Math.round(man / 5) * 5 * 10000 : 0;
+      renderAllUI();
+    }
+
+    function resetManualAdjust(rank) {
+      if (!state.selectedKey) return;
+      const map = getEventAdjustMap(state.selectedKey);
+      map[rank] = 0;
+      renderAllUI();
+    }
+
+    function resetAllManualAdjust() {
+      if (!state.selectedKey) return;
+      state.manualAdjustments[state.selectedKey] = {};
+      renderAllUI();
+    }
+
+    function renderManualAdjustPanel() {
+      const container = document.getElementById("manualAdjustRows");
+      if (!container) return;
+      container.innerHTML = "";
+      const key = state.selectedKey;
+      const defs = [
+        { rank: 1000, label: "ドリーム級 (T1,000)" },
+        { rank: 5000, label: "ダイヤ級 (T5,000)" },
+        { rank: 10000, label: "プラチナ級 (T10,000)" },
+      ];
+      const map = getEventAdjustMap(key);
+
+      defs.forEach((d) => {
+        const adjPt = Number(map[d.rank]) || 0;
+        const adjMan = Math.round(adjPt / 10000);
+        const pred = key ? getPredictionFor(key, d.rank) : null;
+        const finalText = pred ? `${Math.round(pred.centralFinal / 10000).toLocaleString()}万 pt` : "未取得";
+
+        const card = document.createElement("div");
+        card.style.cssText = "padding:10px;background:#ffffff;border:1px solid #cbd5e1;border-radius:6px;";
+        card.innerHTML = `
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <strong style="font-size:13px;">${d.label}</strong>
+            <span style="font-size:12px;color:#1d4ed8;font-weight:700;">着地: ${finalText}</span>
+          </div>
+          <div style="display:flex;gap:6px;align-items:center;">
+            <button type="button" onclick="stepManualAdjust(${d.rank}, -5, event)" style="height:30px;padding:0 9px;font-weight:700;">-5万</button>
+            <input type="number" step="5" value="${adjMan}" onchange="setManualAdjustMan(${d.rank}, this.value)"
+              style="width:78px;height:30px;text-align:right;padding:0 6px;border:1px solid #cbd5e1;border-radius:4px;font-weight:700;" />
+            <span style="font-size:12px;">万</span>
+            <button type="button" onclick="stepManualAdjust(${d.rank}, 5, event)" style="height:30px;padding:0 9px;font-weight:700;">+5万</button>
+            <button type="button" onclick="resetManualAdjust(${d.rank})" style="margin-left:auto;height:30px;padding:0 8px;font-size:11px;">自動に戻す</button>
+          </div>
+        `;
+        container.appendChild(card);
+      });
+    }
+
+    function renderSlotEditor() {
+      const editor = document.getElementById("slotEditor");
+      editor.innerHTML = "";
+      const rankOptions = [100, 500, 1000, 5000, 10000, 50000, 100000, 200000];
+
+      const makeRankSelect = (val, onChange) => {
+        const s = document.createElement("select");
+        rankOptions.forEach((r) => {
+          const o = document.createElement("option");
+          o.value = r;
+          o.textContent = `T${r.toLocaleString()}`;
+          if (Number(val) === r) o.selected = true;
+          s.appendChild(o);
+        });
+        s.onchange = (e) => { onChange(Number(e.target.value)); renderActiveCanvas(); };
+        return s;
+      };
+
+      const makeEventSelect = (val, onChange) => {
+        const s = document.createElement("select");
+        state.eligibleItems.forEach((it) => {
+          const o = document.createElement("option");
+          o.value = it.key;
+          o.textContent = it.shortLabel;
+          if (val === it.key) o.selected = true;
+          s.appendChild(o);
+        });
+        s.onchange = (e) => { onChange(e.target.value); renderActiveCanvas(); };
+        return s;
+      };
+
+      if (state.mode === "single") {
+        const row = document.createElement("div");
+        row.className = "row";
+        row.append(
+          "表示対象: ",
+          makeEventSelect(state.single.key, (k) => (state.single.key = k)),
+          makeRankSelect(state.single.rank, (r) => (state.single.rank = r))
+        );
+        editor.appendChild(row);
+      } else if (state.mode === "dual") {
+        ["左枠", "右枠"].forEach((lbl, idx) => {
+          const row = document.createElement("div");
+          row.className = "row";
+          row.append(
+            `${lbl}: `,
+            makeEventSelect(state.dual[idx].key, (k) => (state.dual[idx].key = k)),
+            makeRankSelect(state.dual[idx].rank, (r) => (state.dual[idx].rank = r))
           );
-          if (!ok) return;
+          editor.appendChild(row);
+        });
+      } else {
+        ["左枠（標準: ドリーム級）", "中央枠（標準: ダイヤ級）", "右枠（標準: プラチナ級）"].forEach((lbl, idx) => {
+          const row = document.createElement("div");
+          row.className = "row";
+          row.append(
+            `${lbl}: `,
+            makeEventSelect(state.triple[idx].key, (k) => (state.triple[idx].key = k)),
+            makeRankSelect(state.triple[idx].rank, (r) => (state.triple[idx].rank = r))
+          );
+          editor.appendChild(row);
+        });
+      }
+    }
+
+    function onModeOrThemeChanged() {
+      state.mode = document.getElementById("modeSelect").value;
+      state.themeOverride = document.getElementById("themeSelect").value;
+      renderSlotEditor();
+      renderActiveCanvas();
+    }
+
+    document.getElementById("targetEventSelect").addEventListener("change", (e) => {
+      const newKey = e.target.value;
+      state.selectedKey = newKey;
+      state.single.key = newKey;
+      state.dual.forEach((s) => (s.key = newKey));
+      state.triple.forEach((s) => (s.key = newKey));
+      renderAllUI();
+    });
+
+    async function triggerBroadcast(shouldNotify = true) {
+      const confirmMsg = shouldNotify
+        ? "現在プレビュー中の内容で、購読登録されている全Discordチャンネルへ一斉通知を送信します。よろしいですか？"
+        : "現在プレビュー中のデータ・予測画像をサーバーキャッシュへ反映します（チャンネルへの通知は送信しません）。よろしいですか？";
+
+      if (!confirm(confirmMsg)) {
+        return;
+      }
+
+      const btnBroadcast = document.getElementById("broadcastBtn");
+      const btnDataOnly = document.getElementById("dataOnlyBtn");
+      btnBroadcast.disabled = true;
+      btnDataOnly.disabled = true;
+      if (shouldNotify) {
+        btnBroadcast.textContent = "送信中...";
+      } else {
+        btnDataOnly.textContent = "更新中...";
+      }
+
+      try {
+        const canvas = document.getElementById("reportCanvas");
+        const { blob, filename } = await canvasToOptimizedBlob(canvas);
+
+        const respectMuteEl = document.getElementById("chkRespectMuteTime");
+
+        const formData = new FormData();
+        formData.append("nowBorderText", buildNowBorderText());
+        formData.append("customText", document.getElementById("customTextInput").value.trim());
+        formData.append("customTextPosition", document.getElementById("customTextPosSelect").value);
+        formData.append("notify", shouldNotify ? "true" : "false");
+        formData.append("respectMuteTime", respectMuteEl && respectMuteEl.checked ? "true" : "false");
+        formData.append("eventKey", state.selectedKey || "");
+        formData.append("manualAdjustments", JSON.stringify(state.manualAdjustments[state.selectedKey] || {}));
+        if (blob) {
+          formData.append("image", blob, filename);
         }
 
-        el.updateCacheOnlyBtn.disabled = true;
-        el.broadcastBtn.disabled = true;
-        setStatus(shouldNotify ? "画像を生成してDiscordへ一斉配信中..." : "キャッシュを更新中...");
-
+        const endpoint = shouldNotify ? "/api/admin/broadcast" : "/api/admin/update-cache";
+        const res = await apiFetch(endpoint, {
+          method: "POST",
+          body: formData,
+        });
+        const rawText = await res.text();
+        let data;
         try {
-          const { blob, filename } = await exportCanvasBlob();
-          const form = new FormData();
-          form.append("image", blob, filename);
-          form.append("nowBorderText", el.nowBorderTextarea.value.trim());
-          form.append("customText", el.customTextInput.value.trim());
-          form.append("customTextPosition", el.customPosSelect.value);
-          form.append("notify", shouldNotify ? "true" : "false");
-          form.append("respectMuteTime", el.respectMuteCheck.checked ? "true" : "false");
-          form.append("eventKey", state.selectedKey);
-          form.append("manualAdjustments", JSON.stringify(state.manualAdjustments[state.selectedKey] || {}));
+          data = JSON.parse(rawText);
+        } catch (_) {
+          throw new Error(`サーバーから予期しない応答が返りました (HTTP ${res.status})`);
+        }
 
-          const endpoint = shouldNotify ? "/api/admin/broadcast" : "/api/admin/update-cache";
-          const res = await apiFetch(endpoint, { method: "POST", body: form });
-          const data = await res.json();
-          if (!data.ok) throw new Error(data.error || "送信エラー");
-
-          state.lastManualUpdateAt = Date.now();
-          el.lastManualUpdateLabel.textContent = Engine.formatJST(state.lastManualUpdateAt);
-          const m = /最終更新\(([^)]+)\)/.exec(el.nowBorderTextarea.value);
-          if (m) el.cacheTimeLabel.textContent = m[1];
-
-          setStatus(data.message, "var(--success)");
+        if (data.ok) {
           showToast(data.message);
-        } catch (err) {
-          setStatus(`エラー: ${err.message}`, "var(--danger)");
-          showToast(`❌ ${err.message}`);
-        } finally {
-          el.updateCacheOnlyBtn.disabled = false;
-          el.broadcastBtn.disabled = false;
+        } else {
+          alert("エラー: " + (data.error || "不明なエラー"));
         }
+      } catch (err) {
+        alert("通信エラー: " + err.message);
+      } finally {
+        btnBroadcast.disabled = false;
+        btnDataOnly.disabled = false;
+        btnBroadcast.textContent = "🚀 Botに反映（登録チャンネルへ一斉通知）";
+        btnDataOnly.textContent = "🔄 データのみ更新（通知は送信しない）";
       }
+    }
 
-      // -----------------------------------------------------------------------
-      // 6. イベントリスナー登録
-      // -----------------------------------------------------------------------
-      async function attemptLogin(pw) {
-        el.loginBtn.disabled = true;
-        try {
-          const res = await fetch("/api/admin/login", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ password: pw }),
-          });
-          if (!res.ok) {
-            showToast("❌ パスワードが正しくありません");
-            return;
-          }
-          state.password = pw;
-          sessionStorage.setItem("holodori_admin_pw", pw);
-          el.loginScreen.style.display = "none";
-          el.appScreen.style.display = "block";
-          await bootstrapDashboard();
-        } catch (err) {
-          showToast(`❌ 通信エラー: ${err.message}`);
-        } finally {
-          el.loginBtn.disabled = false;
-        }
-      }
-
-      el.loginBtn.addEventListener("click", () => attemptLogin(el.passwordInput.value));
-      el.passwordInput.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") attemptLogin(el.passwordInput.value);
-      });
-
-      el.logoutBtn.addEventListener("click", () => {
-        sessionStorage.removeItem("holodori_admin_pw");
-        location.reload();
-      });
-
-      el.fetchApiBtn.addEventListener("click", handleFetchNewApi);
-      el.reloadAllBtn.addEventListener("click", bootstrapDashboard);
-
-      el.eventSelect.addEventListener("change", (e) => {
-        state.selectedKey = e.target.value;
-        state.textManuallyEdited = false;
-        recalculateAndRender();
-      });
-
-      el.nowBorderTextarea.addEventListener("input", () => {
-        state.textManuallyEdited = true;
-      });
-
-      el.saveAdjBtn.addEventListener("click", () => submitCacheOrBroadcast(false));
-
-      el.resetAdjBtn.addEventListener("click", () => {
-        if (!state.selectedKey) return;
-        state.manualAdjustments[state.selectedKey] = { "1000": 0, "5000": 0, "10000": 0 };
-        recalculateAndRender();
-        showToast("補正値を 0 にリセットしました");
-      });
-
-      el.copyTextBtn.addEventListener("click", () => {
-        el.nowBorderTextarea.select();
-        el.nowBorderTextarea.setSelectionRange(0, 99999);
-        const copied = document.execCommand("copy");
-        if (copied) {
-          showToast("📋 テキストをクリップボードにコピーしました");
-        } else if (navigator.clipboard) {
-          navigator.clipboard.writeText(el.nowBorderTextarea.value)
-            .then(() => showToast("📋 テキストをクリップボードにコピーしました"))
-            .catch(() => showToast("⚠️ コピーに失敗しました"));
-        }
-      });
-
-      el.downloadImgBtn.addEventListener("click", async () => {
-        const { blob, filename } = await exportCanvasBlob();
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = filename;
-        a.click();
-        URL.revokeObjectURL(url);
-      });
-
-      el.updateCacheOnlyBtn.addEventListener("click", () => submitCacheOrBroadcast(false));
-      el.broadcastBtn.addEventListener("click", () => submitCacheOrBroadcast(true));
-
-      // セッション復元
-      if (state.password) {
-        attemptLogin(state.password).catch(() => {});
-      }
-    })();
+    if (adminPassword) {
+      document.getElementById("loginOverlay").style.display = "none";
+      initializeApp();
+    }
   </script>
 </body>
 </html>
