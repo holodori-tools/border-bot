@@ -17,6 +17,9 @@ const {
   MessageFlags,
 } = require("discord.js");
 
+// ★ 共通予測・整形エンジン（public/engine.js と単一ソース共有）
+const Engine = require("../public/engine.js");
+
 let createCanvas = null;
 let registerCustomFont = null;
 try {
@@ -53,12 +56,7 @@ const BOT_OWNER_ID = process.env.BOT_OWNER_ID || "あなたのDiscordユーザ�
 const HOLODORI_API_BASE = "https://holodori-border.com/api";
 const GITHUB_ARCHIVE_BASE = "https://raw.githubusercontent.com/holodori-tools/event-borders/main/archive";
 
-const DAYS_JP = ["日", "月", "火", "水", "木", "金", "土"];
-const TIER_DEFS = [
-  { rank: 1000, label: "ドリーム級" },
-  { rank: 5000, label: "ダイヤ級" },
-  { rank: 10000, label: "プラチナ級" },
-];
+const { TIER_DEFS } = Engine;
 
 // =========================================================================
 // 1. 日本語フォント初期化（Linuxコンテナでの文字化け防止）
@@ -407,56 +405,8 @@ async function loadArchiveFromGithubServer() {
 }
 
 // =========================================================================
-// 4. 日時・テキスト整形ヘルパー
+// 4. NowBorder キャッシュ再構築ヘルパー（Engine.buildNowBorderText を利用）
 // =========================================================================
-function parseJstDateTime(str) {
-  if (str == null) return null;
-  if (typeof str === "number") return str < 1e12 ? str * 1000 : str;
-  const trimmed = String(str).trim();
-  if (/^\d+$/.test(trimmed)) {
-    const num = Number(trimmed);
-    return num < 1e12 ? num * 1000 : num;
-  }
-  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/.exec(trimmed);
-  if (m) {
-    const [, y, mo, d, h, mi, s = "00"] = m;
-    return Date.parse(`${y}-${mo}-${d}T${h}:${mi}:${s}+09:00`);
-  }
-  const parsed = Date.parse(trimmed);
-  return Number.isNaN(parsed) ? null : parsed;
-}
-
-function formatNumber(n) {
-  if (n == null || Number.isNaN(n)) return "-";
-  return Math.round(n).toLocaleString("ja-JP");
-}
-
-function formatJST(ms, withDate = true) {
-  const jst = new Date(ms + 9 * 3600 * 1000);
-  const m = String(jst.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(jst.getUTCDate()).padStart(2, "0");
-  const wd = DAYS_JP[jst.getUTCDay()];
-  const hh = String(jst.getUTCHours()).padStart(2, "0");
-  const mm = String(jst.getUTCMinutes()).padStart(2, "0");
-  return withDate ? `${m}/${day}(${wd}) ${hh}:${mm}` : `${hh}:${mm}`;
-}
-
-function formatRoundedJstTime(ms) {
-  const jst = new Date(ms + 9 * 3600 * 1000);
-  const hh = jst.getUTCHours();
-  const mm = jst.getUTCMinutes();
-  const totalMinutes = hh * 60 + mm;
-  const roundedTotalMinutes = Math.round(totalMinutes / 5) * 5;
-  const finalHour = Math.floor(roundedTotalMinutes / 60) % 24;
-  const finalMin = roundedTotalMinutes % 60;
-  return finalMin === 0 ? `${finalHour}時` : `${finalHour}時${finalMin}分`;
-}
-
-function formatManRounded(score) {
-  if (score == null || Number.isNaN(score)) return "未取得";
-  return `${Math.round(score / 10000)}万`;
-}
-
 function rebuildNowBorderCacheFromGraphs(targetPrefix = null) {
   const keys = Object.keys(memStore.graphs);
   if (keys.length === 0) return memStore.nowBorderCache;
@@ -476,28 +426,18 @@ function rebuildNowBorderCacheFromGraphs(targetPrefix = null) {
   }
   if (!chosenPrefix) return memStore.nowBorderCache;
 
-  let latestTimestamp = 0;
-  const lines = [];
-
+  const graphsByRank = {};
   for (const tier of TIER_DEFS) {
-    const g = memStore.graphs[`${chosenPrefix}::${tier.rank}`];
-    if (g && Array.isArray(g.tier) && g.tier.length > 0) {
-      const [lastT, lastVal] = g.tier[g.tier.length - 1];
-      if (lastT > latestTimestamp) latestTimestamp = lastT;
-      lines.push(`${tier.label} ${formatManRounded(lastVal)}`);
-    } else {
-      lines.push(`${tier.label} 未取得`);
-    }
+    graphsByRank[tier.rank] = memStore.graphs[`${chosenPrefix}::${tier.rank}`] || null;
   }
 
-  if (latestTimestamp === 0) return memStore.nowBorderCache;
+  const built = Engine.buildNowBorderText(graphsByRank);
+  if (!built) return memStore.nowBorderCache;
 
-  const timeLabel = formatRoundedJstTime(latestTimestamp);
-  const text = [`最終更新(${timeLabel})時点のボーダーです！`, ...lines].join("\n");
   const cacheObj = {
-    text,
-    timeLabel,
-    updatedAt: latestTimestamp,
+    text: built.text,
+    timeLabel: built.timeLabel,
+    updatedAt: built.updatedAt,
   };
   memStore.nowBorderCache = cacheObj;
   saveRedisJson("borderbot:cache:nowborder", cacheObj).catch(() => {});
@@ -505,687 +445,8 @@ function rebuildNowBorderCacheFromGraphs(targetPrefix = null) {
 }
 
 // =========================================================================
-// 5. サーバーサイド着地予測モデル（v6 状況適応型・動的ベースライン版）
+// 5. サーバーサイド Canvas 描画（共通 Engine テーマ・予測結果をそのまま描画）
 // =========================================================================
-function calcMedian(values) {
-  if (!values || values.length === 0) return 1.0;
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = sorted.length >> 1;
-  return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) * 0.5;
-}
-
-function interpScoreAtTime(graph, targetT) {
-  const st = graph.startTime;
-  const pts = graph.tier;
-  if (!pts || pts.length === 0) return null;
-  if (targetT <= st) return 0;
-  if (targetT <= pts[0][0]) {
-    return pts[0][1] * Math.max(0, (targetT - st) / Math.max(1, pts[0][0] - st));
-  }
-  if (targetT >= pts[pts.length - 1][0]) {
-    return pts[pts.length - 1][1];
-  }
-  let lo = 0, hi = pts.length - 1;
-  while (lo + 1 < hi) {
-    const mid = (lo + hi) >> 1;
-    if (pts[mid][0] <= targetT) lo = mid;
-    else hi = mid;
-  }
-  const [t0, v0] = pts[lo];
-  const [t1, v1] = pts[hi];
-  return v0 + (v1 - v0) * ((targetT - t0) / Math.max(1, t1 - t0));
-}
-
-function interpScoreAtProgress(graph, prog) {
-  const targetT = graph.startTime + prog * (graph.endTime - graph.startTime);
-  return interpScoreAtTime(graph, targetT);
-}
-
-function getJstParts(ms) {
-  const jst = new Date(ms + 9 * 3600 * 1000);
-  const year = jst.getUTCFullYear();
-  const month = jst.getUTCMonth() + 1;
-  const day = jst.getUTCDate();
-  const dow = jst.getUTCDay();
-  const hour = jst.getUTCHours();
-  const minute = jst.getUTCMinutes();
-  const slot30 = hour * 2 + (minute >= 30 ? 1 : 0);
-  return { year, month, day, dow, hour, minute, slot30 };
-}
-
-function getJstHour(ms) {
-  return getJstParts(ms).hour;
-}
-
-function getJstDayOfWeek(ms) {
-  return getJstParts(ms).dow;
-}
-
-// 日本の祝日判定（JST基準・固定祝日/ハッピーマンデー/春分秋分/振替休日/国民の休日）
-const _jpHolidayCache = new Map();
-function isSingleDayHolidayJST(y, m, d, dow) {
-  const nthMonday = (targetM, n) => {
-    const firstDow = new Date(Date.UTC(y, targetM - 1, 1)).getUTCDay();
-    const firstMon = 1 + ((8 - firstDow) % 7);
-    return firstMon + (n - 1) * 7;
-  };
-  if (m === 1 && d === 1) return true; // 元日
-  if (m === 1 && d === nthMonday(1, 2)) return true; // 成人の日
-  if (m === 2 && d === 11) return true; // 建国記念の日
-  if (m === 2 && d === 23) return true; // 天皇誕生日
-  if (m === 3) {
-    const vernal = Math.floor(20.8431 + 0.242194 * (y - 1980) - Math.floor((y - 1980) / 4));
-    if (d === vernal) return true; // 春分の日
-  }
-  if (m === 4 && d === 29) return true; // 昭和の日
-  if (m === 5 && (d === 3 || d === 4 || d === 5)) return true; // 憲法記念日・みどりの日・こどもの日
-  if (m === 7 && d === nthMonday(7, 3)) return true; // 海の日
-  if (m === 8 && d === 11) return true; // 山の日
-  if (m === 9 && d === nthMonday(9, 3)) return true; // 敬老の日
-  if (m === 9) {
-    const autumnal = Math.floor(23.2488 + 0.242194 * (y - 1980) - Math.floor((y - 1980) / 4));
-    if (d === autumnal) return true; // 秋分の日
-  }
-  if (m === 10 && d === nthMonday(10, 2)) return true; // スポーツの日
-  if (m === 11 && (d === 3 || d === 23)) return true; // 文化の日・勤労感謝の日
-  return false;
-}
-
-function isJapaneseHolidayJST(ms) {
-  const { year, month, day, dow } = getJstParts(ms);
-  const key = `${year}-${month}-${day}`;
-  if (_jpHolidayCache.has(key)) return _jpHolidayCache.get(key);
-
-  const checkDirect = (tMs) => {
-    const p = getJstParts(tMs);
-    return isSingleDayHolidayJST(p.year, p.month, p.day, p.dow);
-  };
-
-  let isHol = checkDirect(ms);
-  // 振替休日（日曜が祝日の場合、その後の最初の平日）
-  if (!isHol && dow !== 0) {
-    for (let back = 1; back <= 3; back++) {
-      const prevMs = ms - back * 86400000;
-      const pp = getJstParts(prevMs);
-      if (!checkDirect(prevMs)) break;
-      if (pp.dow === 0) {
-        isHol = true;
-        break;
-      }
-    }
-  }
-  // 国民の休日（前日と翌日が祝日）
-  if (!isHol && checkDirect(ms - 86400000) && checkDirect(ms + 86400000)) {
-    isHol = true;
-  }
-
-  _jpHolidayCache.set(key, isHol);
-  return isHol;
-}
-
-// 30分スロット（48枠）のデフォルト基礎活性係数（平日 / 休日・祝日）
-function getDefaultSlot30Factor(slot30, isWeekendOrHoliday) {
-  const h = Math.floor(slot30 / 2);
-  const isHalf = slot30 % 2 === 1;
-  const weekday24 = [
-    0.58, 0.36, 0.22, 0.16, 0.15, 0.20,
-    0.34, 0.52, 0.62, 0.62, 0.66, 0.72,
-    0.84, 0.78, 0.78, 0.84, 0.92, 1.05,
-    1.18, 1.30, 1.44, 1.48, 1.32, 0.94,
-  ];
-  const holiday24 = [
-    0.66, 0.44, 0.28, 0.20, 0.18, 0.22,
-    0.34, 0.48, 0.64, 0.78, 0.90, 0.98,
-    1.05, 1.08, 1.12, 1.16, 1.22, 1.28,
-    1.34, 1.42, 1.50, 1.52, 1.36, 0.98,
-  ];
-  const tbl = isWeekendOrHoliday ? holiday24 : weekday24;
-  const cur = tbl[h] || 1.0;
-  const next = tbl[(h + 1) % 24] || cur;
-  return isHalf ? (cur + next) * 0.5 : cur;
-}
-
-// 過去データ（36ファイル群）から「曜日 × 祝日 × 30分スロット」の速度係数を自動学習
-function buildCalendarProfileFromRefs(refGraphs) {
-  const buckets = new Map(); // `${effDow}_${slot30}` -> number[]
-  const stepMs = 30 * 60 * 1000;
-
-  for (const g of refGraphs) {
-    if (!g || !Array.isArray(g.tier) || g.tier.length < 10) continue;
-    const durH = (g.endTime - g.startTime) / 3600000;
-    const finalScore = g.tier[g.tier.length - 1][1];
-    const avgPace = finalScore / Math.max(1, durH);
-    if (avgPace <= 0) continue;
-
-    // 開始直後1hと終了直前3hの特殊スパートを除いた定常区間から時間帯係数を抽出
-    const scanStart = g.startTime + 60 * 60 * 1000;
-    const scanEnd = g.endTime - 3 * 60 * 60 * 1000;
-    for (let t = scanStart; t + stepMs <= scanEnd; t += stepMs) {
-      const s0 = interpScoreAtTime(g, t);
-      const s1 = interpScoreAtTime(g, t + stepMs);
-      if (s0 == null || s1 == null) continue;
-      const slotPace = ((s1 - s0) / 0.5);
-      const ratio = Math.max(0.10, Math.min(3.50, slotPace / avgPace));
-
-      const midMs = t + stepMs * 0.5;
-      const { dow, slot30 } = getJstParts(midMs);
-      const isHol = isJapaneseHolidayJST(midMs);
-      const effDow = isHol ? 0 : dow; // 祝日は日曜相当（休日）プロファイルに統合
-      const bKey = `${effDow}_${slot30}`;
-      if (!buckets.has(bKey)) buckets.set(bKey, []);
-      buckets.get(bKey).push(ratio);
-    }
-  }
-
-  return function getCalendarSlotFactor(ms) {
-    const { dow, slot30 } = getJstParts(ms);
-    const isHol = isJapaneseHolidayJST(ms);
-    const isWeekendOrHoliday = isHol || dow === 0 || dow === 6;
-    const defaultVal = getDefaultSlot30Factor(slot30, isWeekendOrHoliday);
-
-    const effDow = isHol ? 0 : dow;
-    const samples = buckets.get(`${effDow}_${slot30}`) || [];
-    if (samples.length === 0) return defaultVal;
-
-    const learnedMed = calcMedian(samples);
-    // サンプル数に応じてデフォルトと平滑ブレンド（6件以上で75%実測反映）
-    const trust = Math.min(0.75, samples.length / 8);
-    return defaultVal * (1 - trust) + learnedMed * trust;
-  };
-}
-
-// EMA（指数移動平均）で30分速・10分速を取得
-function computeEmaPace(graph, lastT, slotMin, numSlots = 4, alpha = 0.52) {
-  const st = graph.startTime;
-  const slotMs = slotMin * 60 * 1000;
-  const elapsedMs = lastT - st;
-  if (elapsedMs <= 60000) return 0;
-
-  const actualSlots = Math.max(1, Math.min(numSlots, Math.floor(elapsedMs / slotMs)));
-  const paces = [];
-  for (let i = actualSlots; i >= 1; i--) {
-    const t1 = lastT - (i - 1) * slotMs;
-    const t0 = Math.max(st, lastT - i * slotMs);
-    const dtH = (t1 - t0) / 3600000;
-    if (dtH <= 0) continue;
-    const v1 = interpScoreAtTime(graph, t1);
-    const v0 = interpScoreAtTime(graph, t0);
-    paces.push(Math.max(0, (v1 - v0) / dtH));
-  }
-  if (paces.length === 0) return 0;
-  let ema = paces[0];
-  for (let i = 1; i < paces.length; i++) {
-    ema = alpha * paces[i] + (1 - alpha) * ema;
-  }
-  return ema;
-}
-
-// 開始から現在までの「伸び方（カーブ形状）」の類似度を算出（0.15 〜 1.0）
-function calcTrajectoryShapeSimilarity(targetGraph, refGraph, pCur) {
-  const tSt = targetGraph.startTime;
-  const tDur = targetGraph.endTime - tSt;
-  const rSt = refGraph.startTime;
-  const rDur = refGraph.endTime - rSt;
-
-  const tCurVal = interpScoreAtProgress(targetGraph, pCur);
-  const rCurVal = interpScoreAtProgress(refGraph, pCur);
-  if (!tCurVal || tCurVal <= 0 || !rCurVal || rCurVal <= 0) return 0.5;
-
-  const bins = Math.max(4, Math.min(24, Math.round(pCur * 48)));
-  const vecT = [];
-  const vecR = [];
-  let prevT = 0;
-  let prevR = 0;
-
-  for (let i = 1; i <= bins; i++) {
-    const p = (pCur * i) / bins;
-    const curT = interpScoreAtTime(targetGraph, tSt + p * tDur);
-    const curR = interpScoreAtTime(refGraph, rSt + p * rDur);
-    vecT.push(Math.max(0, curT - prevT) / tCurVal);
-    vecR.push(Math.max(0, curR - prevR) / rCurVal);
-    prevT = curT;
-    prevR = curR;
-  }
-
-  let dot = 0, normT = 0, normR = 0;
-  for (let i = 0; i < bins; i++) {
-    dot += vecT[i] * vecR[i];
-    normT += vecT[i] * vecT[i];
-    normR += vecR[i] * vecR[i];
-  }
-  const cosSim = normT > 0 && normR > 0 ? dot / Math.sqrt(normT * normR) : 0.5;
-
-  // 前半半分 vs 後半半分の傾き比（加速型か減速型か）の一致度
-  const halfIdx = Math.floor(bins / 2);
-  const tFirst = vecT.slice(0, halfIdx).reduce((a, b) => a + b, 0);
-  const tSecond = vecT.slice(halfIdx).reduce((a, b) => a + b, 0);
-  const rFirst = vecR.slice(0, halfIdx).reduce((a, b) => a + b, 0);
-  const rSecond = vecR.slice(halfIdx).reduce((a, b) => a + b, 0);
-
-  const tSlope = (tSecond + 0.05) / (tFirst + 0.05);
-  const rSlope = (rSecond + 0.05) / (rFirst + 0.05);
-  const slopeRatio = Math.min(tSlope, rSlope) / Math.max(tSlope, rSlope);
-
-  const combined = Math.pow(Math.max(0, cosSim), 2.0) * (0.4 + 0.6 * slopeRatio);
-  return Math.max(0.15, Math.min(1.0, combined));
-}
-
-function getChapterNumber(item) {
-  const rawId = `${item?.chapterId || ""} ${item?.key || ""}`;
-  const m = /chapter[-_]?0*(\d+)/i.exec(rawId);
-  return m ? Number(m[1]) : null;
-}
-
-function applyNaturalManualAdjustment(pred, adjustPt) {
-  const delta = Number(adjustPt) || 0;
-  if (pred.isFinished || delta === 0) {
-    return { ...pred, manualAdjustPt: 0 };
-  }
-  const cur = pred.currentScore;
-  const origFinal = pred.centralFinal;
-  const origGain = origFinal - cur;
-  const targetFinal = Math.max(cur, origFinal + delta);
-  const newGain = targetFinal - cur;
-  const scale = origGain > 1 ? newGain / origGain : 0;
-
-  const newMin = Math.max(cur, cur + (pred.minFinal - cur) * scale);
-  const newMax = Math.max(targetFinal, cur + (pred.maxFinal - cur) * scale);
-  const newSeries = pred.forecastSeries.map((pt, idx) => {
-    if (idx === 0) return pt;
-    return {
-      p: pt.p,
-      central: Math.max(cur, cur + (pt.central - cur) * scale),
-      min: Math.max(cur, cur + (pt.min - cur) * scale),
-      max: Math.max(cur, cur + (pt.max - cur) * scale),
-    };
-  });
-
-  return {
-    ...pred,
-    centralFinal: targetFinal,
-    minFinal: newMin,
-    maxFinal: newMax,
-    halfSpread: Math.max(targetFinal - newMin, newMax - targetFinal),
-    forecastSeries: newSeries,
-    manualAdjustPt: Math.round(targetFinal - origFinal),
-  };
-}
-
-function computePredictionServer(targetItem, targetGraph, refPairs, targetRank, manualAdjustPt = 0) {
-  const st = targetGraph.startTime;
-  const et = targetGraph.endTime;
-  const dur = et - st;
-  const pts = targetGraph.tier;
-  const lastPt = pts[pts.length - 1];
-  const lastT = lastPt[0];
-  const currentScore = lastPt[1];
-  const elapsedMs = Math.max(60000, lastT - st);
-  const elapsedH = elapsedMs / 3600000;
-  const remMs = Math.max(0, et - lastT);
-  const remH = remMs / 3600000;
-  const pCur = Math.min(1, elapsedMs / dur);
-  const isFinished = pCur >= 0.998 && !targetItem.live;
-
-  // 有効な過去完了データの抽出
-  const validRefs = refPairs
-    .filter(({ graph }) => {
-      if (!graph || !Array.isArray(graph.tier) || graph.tier.length < 15) return false;
-      if (graph.rank && Number(graph.rank) !== Number(targetRank)) return false;
-      const gDur = graph.endTime - graph.startTime;
-      const gProg = (graph.tier[graph.tier.length - 1][0] - graph.startTime) / Math.max(1, gDur);
-      return gProg >= 0.98;
-    })
-    .sort((a, b) => b.graph.endTime - a.graph.endTime);
-
-  // 過去ログから「曜日 × 祝日 × 30分スロット」速度係数を学習
-  const getCalFactor = buildCalendarProfileFromRefs(validRefs.map((r) => r.graph));
-
-  // 1. 常に30分速EMA、終了3時間前から10分速EMAへ移行
-  const ema30m = computeEmaPace(targetGraph, lastT, 30, 4, 0.52);
-  const ema10m = computeEmaPace(targetGraph, lastT, 10, 4, 0.58);
-
-  let w10m = 0;
-  if (!isFinished && remH <= 3.0) {
-    // 残り3.0h -> 2.0h で 0% -> 65%、残り2.0h以下で 65% -> 90%
-    w10m = remH > 2.0 ? (3.0 - remH) * 0.65 : Math.min(0.90, 0.65 + (2.0 - remH) * 0.125);
-  }
-  const activeEmaPace = w10m > 0 ? ema30m * (1 - w10m) + ema10m * w10m : ema30m;
-  const curCalFactor = Math.max(0.18, getCalFactor(lastT - 15 * 60 * 1000));
-  const normalizedEmaPace = activeEmaPace / curCalFactor;
-
-  // 2. 残り時間スロット列の構築（ラスト3h前までは30分刻み、ラスト3h〜終了は10分刻み）
-  const futureSlots = [];
-  if (!isFinished && remMs > 0) {
-    const final3hStart = et - 3 * 3600 * 1000;
-    let cursor = lastT;
-    while (cursor < et - 1000) {
-      const slotMs = cursor >= final3hStart ? 10 * 60 * 1000 : 30 * 60 * 1000;
-      const nextT = Math.min(et, cursor + slotMs);
-      const midT = (cursor + nextT) * 0.5;
-      futureSlots.push({
-        t0: cursor,
-        t1: nextT,
-        p0: (cursor - st) / dur,
-        p1: (nextT - st) / dur,
-        pMid: (midT - st) / dur,
-        dtH: (nextT - cursor) / 3600000,
-        remHMid: (et - midT) / 3600000,
-        calFactor: getCalFactor(midT),
-        is10mZone: cursor >= final3hStart,
-      });
-      cursor = nextT;
-    }
-  }
-
-  // 3. 伸び方（形状）類似度に基づく参照イベントの重み付けと個別予測カーブ生成
-  const targetChNum = getChapterNumber(targetItem);
-  const rankNum = Number(targetRank);
-  const refModels = [];
-  const rNows = [];
-  const rPaces = [];
-
-  for (const rObj of validRefs) {
-    const { item, graph } = rObj;
-    const gSt = graph.startTime;
-    const gDur = graph.endTime - gSt;
-    const hCur = interpScoreAtProgress(graph, pCur);
-    const hFinal = graph.tier[graph.tier.length - 1][1];
-    if (!hCur || hCur <= 0 || hFinal <= hCur) continue;
-
-    // 伸び方（形状）類似度
-    const shapeSim = calcTrajectoryShapeSimilarity(targetGraph, graph, pCur);
-
-    // 現在水準比と直近EMA速度比（カレンダー正規化後）
-    const rNow = currentScore / hCur;
-    const hTargetT = gSt + pCur * gDur;
-    const hEma30m = computeEmaPace(graph, hTargetT, 30, 4, 0.52);
-    const hEma10m = computeEmaPace(graph, hTargetT, 10, 4, 0.58);
-    const hActiveEma = w10m > 0 ? hEma30m * (1 - w10m) + hEma10m * w10m : hEma30m;
-    const hCalFactor = Math.max(0.18, getCalFactor(hTargetT - 15 * 60 * 1000));
-    const hNormEma = hActiveEma / hCalFactor;
-
-    const rawRPace = hNormEma > 0 ? normalizedEmaPace / hNormEma : rNow;
-    const clampRange = remH <= 3.0 ? 0.55 : 0.32;
-    const rPace = Math.max(rNow * (1 - clampRange), Math.min(rNow * (1 + clampRange), rawRPace));
-
-    rNows.push(rNow);
-    rPaces.push(rPace);
-
-    // 累積水準と直近EMA速度のブレンド比率（終盤ほどEMA速度を重視）
-    const wPace = remH <= 3.0 ? 0.72 : remH <= 6.0 ? 0.52 : pCur < 0.25 ? 0.42 : 0.32;
-    const baseScale = (1 - wPace) * rNow + wPace * rPace;
-
-    // 各未来スロットの増分を「参照イベントの純粋増分 × 今回の曜日・祝日係数」で再合成
-    const slotCurve = [currentScore];
-    let acc = currentScore;
-
-    if (!isFinished) {
-      for (let i = 0; i < futureSlots.length; i++) {
-        const sl = futureSlots[i];
-        const gT0 = gSt + sl.p0 * gDur;
-        const gT1 = gSt + sl.p1 * gDur;
-        const gMid = (gT0 + gT1) * 0.5;
-        const rawDh = Math.max(0, interpScoreAtTime(graph, gT1) - interpScoreAtTime(graph, gT0));
-
-        // 参照回側の当時のカレンダー係数を剥がし、今回のカレンダー係数を乗せる
-        const refCal = Math.max(0.20, getCalFactor(gMid));
-        const calAdjustedDh = rawDh * (sl.calFactor / refCal);
-
-        // 時間の経過とともに実測EMA倍率からベース水準へ緩やかに減衰
-        const elapsedFromNowH = (sl.t0 + sl.t1) * 0.5 - lastT;
-        const decay = Math.exp(-Math.max(0, elapsedFromNowH) / (18 * 3600 * 1000));
-        const slotScale = rNow * (1 - decay) + baseScale * decay;
-
-        acc += calAdjustedDh * slotScale;
-        slotCurve.push(acc);
-      }
-    }
-
-    // 総合重み：伸び方（形状）類似度を最重視＋チャプター種別一致＋規模の近さ
-    const refChNum = getChapterNumber(item);
-    let chWeight = 1.0;
-    if (targetChNum != null && refChNum != null) {
-      if (targetChNum === refChNum) chWeight = 1.35;
-      else if ((targetChNum === 5) === (refChNum === 5)) chWeight = 1.15;
-    }
-    const scaleSim = Math.min(rNow, 1 / Math.max(1e-4, rNow));
-    const weight = Math.pow(shapeSim, 1.6) * chWeight * (0.35 + 0.65 * scaleSim);
-
-    refModels.push({
-      item,
-      graph,
-      hCur,
-      hFinal,
-      rNow,
-      rPace,
-      shapeSim,
-      impliedFinal: isFinished ? currentScore : acc,
-      slotCurve,
-      weight,
-    });
-  }
-
-  refModels.sort((a, b) => b.weight - a.weight);
-
-  const medRNow = calcMedian(rNows);
-  const medRPace = calcMedian(rPaces);
-  const liveHeat = 0.55 * medRNow + 0.45 * medRPace;
-
-  // 4. 実測加速検知に基づく「条件付き」終盤スパート補正
-  // （前半が緩やかでも、実際に終盤の加速が始まった時のみ段階的に引き上げる）
-  let spurtBoost = 1.0;
-  let surgeDetectedRatio = 1.0;
-  if (!isFinished && remH <= 12.0 && elapsedH >= 4.0) {
-    const prevCheckT = Math.max(st + 60 * 60 * 1000, lastT - 2.5 * 3600 * 1000);
-    const prevEma = computeEmaPace(targetGraph, prevCheckT, 30, 3, 0.52);
-    const prevCal = Math.max(0.18, getCalFactor(prevCheckT - 15 * 60 * 1000));
-    const normPrevEma = prevEma / prevCal;
-
-    if (normPrevEma > 0) {
-      surgeDetectedRatio = normalizedEmaPace / normPrevEma;
-      // カレンダー要因を除いた純粋な時速が2.5時間前より6%以上加速している場合のみ発動
-      if (surgeDetectedRatio > 1.06) {
-        const tierSensitivity = rankNum <= 1000 ? 0.34 : rankNum >= 10000 ? 0.22 : 0.14;
-        const maxCap = rankNum <= 1000 ? 1.32 : rankNum >= 10000 ? 1.20 : 1.12;
-        spurtBoost = Math.min(maxCap, 1.0 + (surgeDetectedRatio - 1.06) * tierSensitivity);
-      }
-    }
-  }
-
-  // 5. 全スロット積算 ＆ 過去データの加重標準偏差（σ）による動的レンジ算出
-  const forecastSeries = [];
-  let centralFinal = currentScore;
-  let minFinal = currentScore;
-  let maxFinal = currentScore;
-
-  if (!isFinished && refModels.length > 0 && futureSlots.length > 0) {
-    const totalW = refModels.reduce((acc, m) => acc + m.weight, 0);
-
-    // 各スロットのベース増分を加重平均し、条件付きスパート補正を適用して積算
-    let runningCentral = currentScore;
-    const centralPoints = [{ p: pCur, val: currentScore }];
-
-    for (let i = 0; i < futureSlots.length; i++) {
-      const sl = futureSlots[i];
-      let slotBaseInc = 0;
-      for (const m of refModels) {
-        const mInc = m.slotCurve[i + 1] - m.slotCurve[i];
-        slotBaseInc += mInc * m.weight;
-      }
-      slotBaseInc /= totalW;
-
-      // 条件付きスパート補正はラスト6時間以内に集中適用
-      const spurtWeight = sl.remHMid <= 6.0 ? Math.min(1.0, (6.0 - sl.remHMid) / 4.0 + 0.35) : 0.15;
-      const effSpurt = 1.0 + (spurtBoost - 1.0) * spurtWeight;
-
-      runningCentral += slotBaseInc * effSpurt;
-      centralPoints.push({ p: sl.p1, val: runningCentral });
-    }
-
-    centralFinal = runningCentral;
-
-    // 類似チャプター群の「最終着地予測値」の加重標準偏差 σ を算出
-    const spurtScaleTotal =
-      refModels.reduce((acc, m) => acc + m.impliedFinal * m.weight, 0) / totalW > currentScore
-        ? (centralFinal - currentScore) /
-          Math.max(1, refModels.reduce((acc, m) => acc + m.impliedFinal * m.weight, 0) / totalW - currentScore)
-        : 1.0;
-
-    const variance =
-      refModels.reduce((acc, m) => {
-        const scaledImp = currentScore + (m.impliedFinal - currentScore) * spurtScaleTotal;
-        return acc + m.weight * Math.pow(scaledImp - centralFinal, 2);
-      }, 0) / totalW;
-
-    const stdDev = Math.sqrt(variance);
-    // 階級別の信頼係数（ドリーム級は終盤変動が大きいためやや広め、ダイヤ・プラチナはタイトに）
-    const sigmaMult = rankNum <= 1000 ? 1.25 : rankNum >= 10000 ? 1.15 : 1.05;
-    const minFloorRatio = Math.max(0.025, 0.065 * Math.pow(1 - pCur, 0.7));
-    const spreadMargin = Math.max(stdDev * sigmaMult, (centralFinal - currentScore) * minFloorRatio);
-
-    minFinal = Math.max(currentScore, centralFinal - spreadMargin);
-    maxFinal = centralFinal + spreadMargin;
-
-    for (let i = 0; i < centralPoints.length; i++) {
-      const pt = centralPoints[i];
-      if (i === 0) {
-        forecastSeries.push({ p: pt.p, central: currentScore, min: currentScore, max: currentScore });
-        continue;
-      }
-      const stepRatio = (pt.p - pCur) / Math.max(1e-4, 1 - pCur);
-      const curMargin = spreadMargin * Math.pow(stepRatio, 0.85);
-      forecastSeries.push({
-        p: pt.p,
-        central: pt.val,
-        min: Math.max(currentScore, pt.val - curMargin),
-        max: pt.val + curMargin,
-      });
-    }
-  } else if (!isFinished) {
-    const naiveLinear = pCur > 0.02 ? currentScore / pCur : currentScore;
-    centralFinal = Math.max(naiveLinear * 1.08, currentScore + normalizedEmaPace * remH);
-    minFinal = centralFinal * 0.93;
-    maxFinal = centralFinal * 1.09;
-    forecastSeries.push({ p: pCur, central: currentScore, min: currentScore, max: currentScore });
-    forecastSeries.push({ p: 1, central: centralFinal, min: minFinal, max: maxFinal });
-  }
-
-  const halfSpread = isFinished ? 0 : Math.max(centralFinal - minFinal, maxFinal - centralFinal);
-  const topMatch = refModels[0];
-
-  return applyNaturalManualAdjustment(
-    {
-      targetItem,
-      targetGraph,
-      rank: targetRank,
-      currentScore,
-      lastT,
-      elapsedH,
-      totalH: dur / 3600000,
-      pCur,
-      isFinished,
-      recentPace: activeEmaPace,
-      centralFinal,
-      minFinal,
-      maxFinal,
-      halfSpread,
-      forecastSeries,
-      refModels,
-      metaInfo: {
-        refCount: refModels.length,
-        zoneLabel: remH <= 3.0 ? "終盤10分速EMA域" : "通常30分速EMA域",
-        wPacePct: remH <= 3.0 ? 72 : remH <= 6.0 ? 52 : 35,
-        w10mPct: Math.round(w10m * 100),
-        pace10m: ema10m,
-        pace30m: ema30m,
-        liveHeat,
-        spurtBoost,
-        topShapeSim: topMatch ? topMatch.shapeSim : 0,
-        topMatchName: topMatch ? topMatch.item.shortLabel : "-",
-      },
-    },
-    manualAdjustPt
-  );
-}
-
-// =========================================================================
-// 6. サーバーサイド Canvas 描画（承認済み新レイアウト・トリプル 2160×820）
-// =========================================================================
-function getTierTheme(rank) {
-  let key = "silver";
-  if (rank <= 1000) key = "rainbow";
-  else if (rank <= 5000) key = "purple";
-  else if (rank <= 10000) key = "platinum";
-  else if (rank <= 50000) key = "gold";
-
-  const themes = {
-    rainbow: {
-      bgStops: ["#0c0a1d", "#181236", "#0b192c"],
-      borderStops: ["#ff4d6d", "#ffb703", "#06d6a0", "#3a86ff", "#c77dff", "#ff4d6d"],
-      primary: "#ffffff",
-      accent: "#38bdf8",
-      forecast: "#ffbe0b",
-      bandFill: "rgba(255, 190, 11, 0.22)",
-      glowColor: "rgba(168, 85, 247, 0.75)",
-      sparkle: true,
-      rainbow: true,
-    },
-    purple: {
-      bgStops: ["#120724", "#240e47", "#140829"],
-      borderStops: ["#a855f7", "#f0abfc", "#7e22ce", "#e879f9"],
-      primary: "#f3e8ff",
-      accent: "#d8b4fe",
-      forecast: "#f0abfc",
-      bandFill: "rgba(216, 180, 254, 0.22)",
-      glowColor: "rgba(217, 70, 239, 0.85)",
-      sparkle: true,
-      rainbow: false,
-    },
-    platinum: {
-      bgStops: ["#101822", "#1e2c3d", "#131c28"],
-      borderStops: ["#e0f2fe", "#7dd3fc", "#f8fafc", "#38bdf8"],
-      primary: "#f0f9ff",
-      accent: "#7dd3fc",
-      forecast: "#bae6fd",
-      bandFill: "rgba(125, 211, 252, 0.20)",
-      glowColor: "rgba(125, 211, 252, 0.55)",
-      sparkle: false,
-      rainbow: false,
-    },
-    gold: {
-      bgStops: ["#1c1507", "#33260c", "#1a1306"],
-      borderStops: ["#fde047", "#f59e0b", "#fef08a", "#d97706"],
-      primary: "#fef9c3",
-      accent: "#fde047",
-      forecast: "#fbbf24",
-      bandFill: "rgba(251, 191, 36, 0.20)",
-      glowColor: "rgba(245, 158, 11, 0.50)",
-      sparkle: false,
-      rainbow: false,
-    },
-    silver: {
-      bgStops: ["#14171c", "#262b34", "#161920"],
-      borderStops: ["#e2e8f0", "#94a3b8", "#f1f5f9", "#64748b"],
-      primary: "#f1f5f9",
-      accent: "#cbd5e1",
-      forecast: "#e2e8f0",
-      bandFill: "rgba(203, 213, 225, 0.18)",
-      glowColor: "rgba(148, 163, 184, 0.35)",
-      sparkle: false,
-      rainbow: false,
-    },
-  };
-  return themes[key];
-}
-
-function getTierRankTitle(rank) {
-  const r = Number(rank);
-  if (r === 1000) return "ドリーム級";
-  if (r === 5000) return "ダイヤ級";
-  if (r === 10000) return "プラチナ級";
-  return null;
-}
-
 function drawRoundRect(ctx, x, y, w, h, r) {
   ctx.beginPath();
   ctx.moveTo(x + r, y);
@@ -1246,7 +507,7 @@ function renderServerTripleImageBuffer(targetItem, predsByRank) {
   ctx.fillStyle = "rgba(255, 255, 255, 0.68)";
   ctx.font = `600 16px ${serverFontFamily}`;
   ctx.fillText(
-    `${targetItem.catLabel}  ｜  開催期間: ${formatJST(targetItem.startTime)} 〜 ${formatJST(targetItem.endTime)}`,
+    `${targetItem.catLabel}  ｜  開催期間: ${Engine.formatJST(targetItem.startTime)} 〜 ${Engine.formatJST(targetItem.endTime)}`,
     marginX + 36,
     topBarY + 32
   );
@@ -1266,7 +527,7 @@ function renderServerTripleImageBuffer(targetItem, predsByRank) {
 
   ctx.fillStyle = "rgba(255, 255, 255, 0.52)";
   ctx.font = `600 15px ${serverFontFamily}`;
-  ctx.fillText(`Generated at ${formatJST(Date.now())} JST`, W - marginX - 22, topBarY + 68);
+  ctx.fillText(`Generated at ${Engine.formatJST(Date.now())} JST`, W - marginX - 22, topBarY + 68);
   ctx.textAlign = "left";
 
   const cardY = topBarY + topBarH + 18;
@@ -1293,8 +554,8 @@ function renderServerTripleImageBuffer(targetItem, predsByRank) {
 }
 
 function drawServerComparisonSlot(ctx, x, y, w, h, pred, rank) {
-  const theme = getTierTheme(rank);
-  const rankTitle = getTierRankTitle(rank);
+  const theme = Engine.getTierTheme(rank);
+  const rankTitle = Engine.getTierRankTitle(rank);
 
   ctx.save();
   drawRoundRect(ctx, x, y, w, h, 18);
@@ -1424,14 +685,14 @@ function drawServerComparisonSlot(ctx, x, y, w, h, pred, rank) {
     ctx.shadowColor = theme.glowColor;
     ctx.shadowBlur = 16;
   }
-  ctx.fillText(`${formatNumber(pred.centralFinal)} pt`, heroX + 18, heroY + 76);
+  ctx.fillText(`${Engine.formatNumber(pred.centralFinal)} pt`, heroX + 18, heroY + 76);
   ctx.restore();
 
   if (!pred.isFinished) {
     ctx.fillStyle = theme.accent;
     ctx.font = `700 16px ${serverFontFamily}`;
     ctx.fillText(
-      `誤差目安: ±${formatNumber(pred.halfSpread)} pt  (${formatNumber(pred.minFinal)} 〜 ${formatNumber(pred.maxFinal)})`,
+      `誤差目安: ±${Engine.formatNumber(pred.halfSpread)} pt  (${Engine.formatNumber(pred.minFinal)} 〜 ${Engine.formatNumber(pred.maxFinal)})`,
       heroX + 18,
       heroY + 106
     );
@@ -1445,17 +706,17 @@ function drawServerComparisonSlot(ctx, x, y, w, h, pred, rank) {
   const colW = (w - pad * 2 - 14) / 2;
   const cellH = 44;
   const subCells = [
-    { k: "現在スコア", v: `${formatNumber(pred.currentScore)} pt`, cx: x + pad, cy: gridY },
+    { k: "現在スコア", v: `${Engine.formatNumber(pred.currentScore)} pt`, cx: x + pad, cy: gridY },
     {
       k: "経過 / 進捗",
       v: `${pred.elapsedH.toFixed(1)}h / ${pred.totalH.toFixed(0)}h (${(pred.pCur * 100).toFixed(1)}%)`,
       cx: x + pad + colW + 14,
       cy: gridY,
     },
-    { k: "直近時速", v: `${formatNumber(pred.recentPace)} pt/h`, cx: x + pad, cy: gridY + cellH + 8 },
+    { k: "直近時速", v: `${Engine.formatNumber(pred.recentPace)} pt/h`, cx: x + pad, cy: gridY + cellH + 8 },
     {
       k: "残り予測増分",
-      v: pred.isFinished ? "0 pt" : `+${formatNumber(Math.max(0, pred.centralFinal - pred.currentScore))} pt`,
+      v: pred.isFinished ? "0 pt" : `+${Engine.formatNumber(Math.max(0, pred.centralFinal - pred.currentScore))} pt`,
       cx: x + pad + colW + 14,
       cy: gridY + cellH + 8,
     },
@@ -1508,7 +769,7 @@ function drawServerComparisonSlot(ctx, x, y, w, h, pred, rank) {
   ctx.fillStyle = "rgba(255, 255, 255, 0.58)";
   ctx.font = `600 13px ${serverFontFamily}`;
   ctx.textAlign = "right";
-  ctx.fillText(`基準: ${formatJST(pred.lastT)}`, gBoxX + gBoxW - 16, gBoxY + 26);
+  ctx.fillText(`基準: ${Engine.formatJST(pred.lastT)}`, gBoxX + gBoxW - 16, gBoxY + 26);
   ctx.textAlign = "left";
 
   const gPadL = 68, gPadR = 18, gPadT = 40, gPadB = 32;
@@ -1537,7 +798,7 @@ function drawServerComparisonSlot(ctx, x, y, w, h, pred, rank) {
     ctx.stroke();
 
     ctx.fillStyle = "rgba(255, 255, 255, 0.68)";
-    const lbl = val >= 10000 ? `${(val / 10000).toFixed(0)}万` : formatNumber(val);
+    const lbl = val >= 10000 ? `${(val / 10000).toFixed(0)}万` : Engine.formatNumber(val);
     ctx.fillText(lbl, plotX - 10, gy + 4);
   }
 
@@ -1659,7 +920,7 @@ function drawServerComparisonSlot(ctx, x, y, w, h, pred, rank) {
 }
 
 // =========================================================================
-// 7. holodori-border.com 新API自動取得 ＆ 定時配信スケジューラ
+// 6. holodori-border.com 新API自動取得 ＆ 定時配信スケジューラ
 // =========================================================================
 async function fetchActiveEventFromNewApi(now = Date.now()) {
   const evListRes = await fetch(`${HOLODORI_API_BASE}/events`);
@@ -1673,8 +934,8 @@ async function fetchActiveEventFromNewApi(now = Date.now()) {
   if (evListData.current_event_id) {
     const cand = events.find((e) => e.event_id === evListData.current_event_id);
     if (cand) {
-      const st = parseJstDateTime(cand.start);
-      const et = parseJstDateTime(cand.end);
+      const st = Engine.parseJstDateTime(cand.start);
+      const et = Engine.parseJstDateTime(cand.end);
       if (st && et && now >= st && now <= et + 59 * 1000) {
         activeEv = cand;
       }
@@ -1682,8 +943,8 @@ async function fetchActiveEventFromNewApi(now = Date.now()) {
   }
   if (!activeEv) {
     activeEv = events.find((e) => {
-      const st = parseJstDateTime(e.start);
-      const et = parseJstDateTime(e.end);
+      const st = Engine.parseJstDateTime(e.start);
+      const et = Engine.parseJstDateTime(e.end);
       return st && et && now >= st && now <= et + 59 * 1000;
     });
   }
@@ -1704,16 +965,16 @@ async function fetchActiveEventFromNewApi(now = Date.now()) {
   if (pointRankings.length === 0) return null;
 
   const activeRanking = pointRankings.find((r) => {
-    const cst = parseJstDateTime(r.chapter_start);
-    const cet = parseJstDateTime(r.chapter_end);
+    const cst = Engine.parseJstDateTime(r.chapter_start);
+    const cet = Engine.parseJstDateTime(r.chapter_end);
     return cst && cet && now >= cst && now <= cet + 59 * 1000;
   });
 
   if (!activeRanking) return null;
 
   const matchedChapter = chapters.find((c) => c.chapter_id === activeRanking.chapter_id) || {};
-  const startTime = parseJstDateTime(activeRanking.chapter_start || activeEv.start);
-  const endTime = parseJstDateTime(activeRanking.chapter_end || activeEv.end);
+  const startTime = Engine.parseJstDateTime(activeRanking.chapter_start || activeEv.start);
+  const endTime = Engine.parseJstDateTime(activeRanking.chapter_end || activeEv.end);
 
   memStore.activeEndCache = { endTime, checkedAt: now };
 
@@ -1754,8 +1015,8 @@ function mergeEventsListToStore(newApiEvents) {
   for (const ne of newApiEvents) {
     if (!ne || !ne.event_id) continue;
     const existing = map.get(ne.event_id) || {};
-    const st = parseJstDateTime(ne.start);
-    const et = parseJstDateTime(ne.end);
+    const st = Engine.parseJstDateTime(ne.start);
+    const et = Engine.parseJstDateTime(ne.end);
     const evType = Number(ne.event_type);
     map.set(ne.event_id, {
       ...existing,
@@ -1807,8 +1068,8 @@ async function runAutomatedPollAndBroadcast(triggerReason = "scheduled", preFetc
       chMeta[c.chapter_id] = {
         name: c.display_name ? `Chapter ${c.chapter_number}：${c.display_name}` : null,
         shortName: c.display_name || target.eventName,
-        startTime: parseJstDateTime(c.start),
-        endTime: parseJstDateTime(c.end),
+        startTime: Engine.parseJstDateTime(c.start),
+        endTime: Engine.parseJstDateTime(c.end),
       };
     }
     memStore.events[evIdx].chapters = chIds;
@@ -1829,7 +1090,7 @@ async function runAutomatedPollAndBroadcast(triggerReason = "scheduled", preFetc
         if (!Array.isArray(rows) || rows.length === 0) return null;
         const tierPts = rows
           .filter((r) => r && r.requested_at != null && r.score != null)
-          .map((r) => [parseJstDateTime(r.requested_at), Number(r.score)])
+          .map((r) => [Engine.parseJstDateTime(r.requested_at), Number(r.score)])
           .filter(([t, s]) => t != null && !Number.isNaN(s))
           .sort((a, b) => a[0] - b[0]);
         if (tierPts.length === 0) return null;
@@ -1873,8 +1134,9 @@ async function runAutomatedPollAndBroadcast(triggerReason = "scheduled", preFetc
 
   const nbCache = rebuildNowBorderCacheFromGraphs(target.key);
   const nowBorderText = nbCache ? nbCache.text : "";
-  const timeLabel = nbCache ? nbCache.timeLabel : formatRoundedJstTime(now);
+  const timeLabel = nbCache ? nbCache.timeLabel : Engine.formatRoundedJstTime(now);
 
+  // ★ 共通 Engine.computePrediction を使って3ランク分の予測を算出
   const predsByRank = {};
   for (const tierDef of TIER_DEFS) {
     const targetGraph = memStore.graphs[`${target.key}::${tierDef.rank}`];
@@ -1906,7 +1168,7 @@ async function runAutomatedPollAndBroadcast(triggerReason = "scheduled", preFetc
     }
 
     const adjMap = memStore.manualAdjustments[target.key] || {};
-    predsByRank[tierDef.rank] = computePredictionServer(
+    predsByRank[tierDef.rank] = Engine.computePrediction(
       target,
       targetGraph,
       refPairs,
@@ -2026,7 +1288,7 @@ function startScheduledPoller() {
 }
 
 // =========================================================================
-// 8. Discord Bot ＆ スラッシュコマンド設定
+// 7. Discord Bot ＆ スラッシュコマンド設定
 // =========================================================================
 const client = new Client({
   intents: [GatewayIntentBits.Guilds],
@@ -2278,7 +1540,7 @@ client.on("interactionCreate", async (interaction) => {
 });
 
 // =========================================================================
-// 9. Express Webサーバー ＆ 管理画面API
+// 8. Express Webサーバー ＆ 管理画面API
 // =========================================================================
 app.use(express.json({ limit: "10mb" }));
 app.use(express.static(path.join(__dirname, "../public")));
@@ -2376,7 +1638,7 @@ app.post("/api/admin/cache-prediction", requireAdmin, upload.single("image"), as
   if (!req.file) {
     return res.status(400).json({ error: "No image uploaded" });
   }
-  const timeLabel = (req.body.timeLabel || formatRoundedJstTime(Date.now())).trim();
+  const timeLabel = (req.body.timeLabel || Engine.formatRoundedJstTime(Date.now())).trim();
   const filename = req.file.originalname || "border_prediction.png";
   const cacheObj = {
     imageBase64: req.file.buffer.toString("base64"),
@@ -2407,7 +1669,7 @@ async function saveAdminCachePayload(req, imageBuffer, filename) {
 
   if (nowBorderText) {
     const m = /最終更新\(([^)]+)\)/.exec(nowBorderText);
-    const timeLabel = m ? m[1] : formatRoundedJstTime(now);
+    const timeLabel = m ? m[1] : Engine.formatRoundedJstTime(now);
     memStore.nowBorderCache = {
       text: nowBorderText,
       timeLabel,
@@ -2418,7 +1680,7 @@ async function saveAdminCachePayload(req, imageBuffer, filename) {
 
   if (imageBuffer) {
     const m = /最終更新\(([^)]+)\)/.exec(nowBorderText);
-    const timeLabel = m ? m[1] : formatRoundedJstTime(now);
+    const timeLabel = m ? m[1] : Engine.formatRoundedJstTime(now);
     memStore.predictionCache = {
       imageBase64: imageBuffer.toString("base64"),
       filename,
@@ -2530,7 +1792,7 @@ app.post("/api/admin/broadcast", requireAdmin, upload.single("image"), async (re
 });
 
 // =========================================================================
-// 10. 起動シーケンス
+// 9. 起動シーケンス
 // =========================================================================
 (async () => {
   await ensureJapaneseFont();
