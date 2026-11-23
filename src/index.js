@@ -17,7 +17,7 @@ const {
   MessageFlags,
 } = require("discord.js");
 
-// ★ 共通予測・整形エンジン（public/engine.js と単一ソース共有）
+// ★ 共通予測・描画エンジン（public/engine.js と単一ソース共有）
 const Engine = require("../public/engine.js");
 
 let createCanvas = null;
@@ -50,8 +50,7 @@ const DISCORD_CLIENT_ID = process.env.DISCORD_CLIENT_ID || "";
 const UPSTASH_URL = (process.env.UPSTASH_REDIS_REST_URL || "").replace(/\/+$/, "");
 const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || "";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "2226";
-// ★ご自身のDiscord User IDを入力してください（環境変数 BOT_OWNER_ID でも設定可能）
-const BOT_OWNER_ID = process.env.BOT_OWNER_ID || "あなたのDiscordユーザーID";
+const BOT_OWNER_ID = process.env.BOT_OWNER_ID || "";
 
 const HOLODORI_API_BASE = "https://holodori-border.com/api";
 const GITHUB_ARCHIVE_BASE = "https://raw.githubusercontent.com/holodori-tools/event-borders/main/archive";
@@ -59,9 +58,17 @@ const GITHUB_ARCHIVE_BASE = "https://raw.githubusercontent.com/holodori-tools/ev
 const { TIER_DEFS } = Engine;
 
 // =========================================================================
-// 1. 日本語フォント初期化（Linuxコンテナでの文字化け防止）
+// 1. 日本語フォント初期化 ＆ 共通レポートレンダラー生成
 // =========================================================================
 let serverFontFamily = "sans-serif";
+
+const reportRenderer = createCanvas
+  ? Engine.createReportRenderer({
+      createCanvas,
+      fontFamily: serverFontFamily,
+      monoFamily: serverFontFamily,
+    })
+  : null;
 
 async function ensureJapaneseFont() {
   if (!registerCustomFont) return;
@@ -105,6 +112,9 @@ async function ensureJapaneseFont() {
     }
     families.push("sans-serif");
     serverFontFamily = families.join(", ");
+    if (reportRenderer) {
+      reportRenderer.setFontFamilies(serverFontFamily, serverFontFamily);
+    }
     console.log(`[Font] フォント登録完了: ${serverFontFamily}`);
   } catch (err) {
     console.warn("[Font] フォント取得スキップ:", err.message);
@@ -405,33 +415,10 @@ async function loadArchiveFromGithubServer() {
 }
 
 // =========================================================================
-// 4. NowBorder キャッシュ再構築ヘルパー（Engine.buildNowBorderText を利用）
+// 4. NowBorder キャッシュ再構築ヘルパー（Engine.buildNowBorderPayloadFromGraphs を利用）
 // =========================================================================
 function rebuildNowBorderCacheFromGraphs(targetPrefix = null) {
-  const keys = Object.keys(memStore.graphs);
-  if (keys.length === 0) return memStore.nowBorderCache;
-
-  let chosenPrefix = targetPrefix;
-  if (!chosenPrefix) {
-    let newestTs = -1;
-    for (const k of keys) {
-      const g = memStore.graphs[k];
-      if (!g || !Array.isArray(g.tier) || g.tier.length === 0) continue;
-      const lastT = g.tier[g.tier.length - 1][0];
-      if (lastT > newestTs) {
-        newestTs = lastT;
-        chosenPrefix = k.replace(/::\d+$/, "");
-      }
-    }
-  }
-  if (!chosenPrefix) return memStore.nowBorderCache;
-
-  const graphsByRank = {};
-  for (const tier of TIER_DEFS) {
-    graphsByRank[tier.rank] = memStore.graphs[`${chosenPrefix}::${tier.rank}`] || null;
-  }
-
-  const built = Engine.buildNowBorderText(graphsByRank);
+  const built = Engine.buildNowBorderPayloadFromGraphs(memStore.graphs, targetPrefix);
   if (!built) return memStore.nowBorderCache;
 
   const cacheObj = {
@@ -445,482 +432,7 @@ function rebuildNowBorderCacheFromGraphs(targetPrefix = null) {
 }
 
 // =========================================================================
-// 5. サーバーサイド Canvas 描画（共通 Engine テーマ・予測結果をそのまま描画）
-// =========================================================================
-function drawRoundRect(ctx, x, y, w, h, r) {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, x + w, y + h, r);
-  ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r);
-  ctx.arcTo(x, y, x + w, y, r);
-  ctx.closePath();
-}
-
-function drawFittedText(ctx, text, x, y, maxWidth) {
-  let str = String(text || "");
-  if (ctx.measureText(str).width <= maxWidth) {
-    ctx.fillText(str, x, y);
-    return;
-  }
-  while (str.length > 1 && ctx.measureText(str + "…").width > maxWidth) {
-    str = str.slice(0, -1);
-  }
-  ctx.fillText(str + "…", x, y);
-}
-
-function renderServerTripleImageBuffer(targetItem, predsByRank) {
-  if (!createCanvas) return null;
-
-  const W = 2160;
-  const H = 820;
-  const canvas = createCanvas(W, H);
-  const ctx = canvas.getContext("2d");
-
-  const baseBg = ctx.createLinearGradient(0, 0, W, H);
-  baseBg.addColorStop(0, "#090c15");
-  baseBg.addColorStop(0.5, "#111626");
-  baseBg.addColorStop(1, "#090c15");
-  ctx.fillStyle = baseBg;
-  ctx.fillRect(0, 0, W, H);
-
-  const marginX = 32;
-  const gapX = 24;
-
-  const topBarY = 22;
-  const topBarH = 88;
-  ctx.save();
-  drawRoundRect(ctx, marginX, topBarY, W - marginX * 2, topBarH, 14);
-  ctx.fillStyle = "rgba(255, 255, 255, 0.05)";
-  ctx.fill();
-  ctx.lineWidth = 1.5;
-  ctx.strokeStyle = "rgba(255, 255, 255, 0.14)";
-  ctx.stroke();
-  ctx.restore();
-
-  ctx.save();
-  drawRoundRect(ctx, marginX + 16, topBarY + 16, 6, topBarH - 32, 3);
-  ctx.fillStyle = "#38bdf8";
-  ctx.fill();
-  ctx.restore();
-
-  ctx.fillStyle = "rgba(255, 255, 255, 0.68)";
-  ctx.font = `600 16px ${serverFontFamily}`;
-  ctx.fillText(
-    `${targetItem.catLabel}  ｜  開催期間: ${Engine.formatJST(targetItem.startTime)} 〜 ${Engine.formatJST(targetItem.endTime)}`,
-    marginX + 36,
-    topBarY + 32
-  );
-
-  const fullTitle = targetItem.chapterName
-    ? `${targetItem.eventName}  ／  ${targetItem.chapterName}`
-    : targetItem.eventName;
-
-  ctx.fillStyle = "#ffffff";
-  ctx.font = `800 32px ${serverFontFamily}`;
-  drawFittedText(ctx, fullTitle, marginX + 36, topBarY + 72, W - marginX * 2 - 420);
-
-  ctx.fillStyle = "rgba(255, 255, 255, 0.72)";
-  ctx.font = `700 16px ${serverFontFamily}`;
-  ctx.textAlign = "right";
-  ctx.fillText("BORDER FORECAST OVERVIEW", W - marginX - 22, topBarY + 34);
-
-  ctx.fillStyle = "rgba(255, 255, 255, 0.52)";
-  ctx.font = `600 15px ${serverFontFamily}`;
-  ctx.fillText(`Generated at ${Engine.formatJST(Date.now())} JST`, W - marginX - 22, topBarY + 68);
-  ctx.textAlign = "left";
-
-  const cardY = topBarY + topBarH + 18;
-  const cardH = H - cardY - 24;
-  const cardW = (W - marginX * 2 - gapX * 2) / 3;
-
-  TIER_DEFS.forEach((tierDef, idx) => {
-    const cx = marginX + idx * (cardW + gapX);
-    const pred = predsByRank[tierDef.rank] || null;
-    drawServerComparisonSlot(ctx, cx, cardY, cardW, cardH, pred, tierDef.rank);
-  });
-
-  const pngBuf = canvas.toBuffer("image/png");
-  if (pngBuf.length <= 850 * 1024) {
-    return { buffer: pngBuf, filename: "border_prediction.png" };
-  }
-  let jpgBuf;
-  try {
-    jpgBuf = canvas.toBuffer("image/jpeg", 90);
-  } catch (_) {
-    jpgBuf = canvas.toBuffer("image/jpeg", { quality: 0.90 });
-  }
-  return { buffer: jpgBuf, filename: "border_prediction.jpg" };
-}
-
-function drawServerComparisonSlot(ctx, x, y, w, h, pred, rank) {
-  const theme = Engine.getTierTheme(rank);
-  const rankTitle = Engine.getTierRankTitle(rank);
-
-  ctx.save();
-  drawRoundRect(ctx, x, y, w, h, 18);
-  const cardBg = ctx.createLinearGradient(x, y, x + w, y + h);
-  cardBg.addColorStop(0, theme.bgStops[0]);
-  cardBg.addColorStop(0.5, theme.bgStops[1]);
-  cardBg.addColorStop(1, theme.bgStops[2]);
-  ctx.fillStyle = cardBg;
-  ctx.fill();
-
-  const aura = ctx.createRadialGradient(x + w * 0.8, y + 80, 15, x + w * 0.8, y + 80, 320);
-  aura.addColorStop(0, theme.glowColor);
-  aura.addColorStop(1, "rgba(0,0,0,0)");
-  ctx.fillStyle = aura;
-  ctx.fillRect(x, y, w, h);
-
-  if (theme.rainbow) {
-    const rbAura = ctx.createLinearGradient(x, y, x + w, y + h);
-    rbAura.addColorStop(0, "rgba(255, 77, 109, 0.14)");
-    rbAura.addColorStop(0.35, "rgba(255, 183, 3, 0.12)");
-    rbAura.addColorStop(0.7, "rgba(6, 214, 160, 0.12)");
-    rbAura.addColorStop(1, "rgba(58, 134, 255, 0.16)");
-    ctx.fillStyle = rbAura;
-    ctx.fillRect(x, y, w, h);
-  }
-  ctx.restore();
-
-  if (theme.sparkle) {
-    const relStars = [
-      [44, 46, 2.8], [w - 50, 40, 3.2], [w - 100, 125, 2.5],
-      [w - 44, h - 46, 2.8], [52, h - 42, 2.3], [w * 0.55, 32, 2.2],
-    ];
-    for (const [sx, sy, sr] of relStars) {
-      ctx.save();
-      ctx.fillStyle = "#ffffff";
-      ctx.shadowColor = theme.forecast;
-      ctx.shadowBlur = 14;
-      ctx.beginPath();
-      ctx.arc(x + sx, y + sy, sr, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-    }
-  }
-
-  const borderGrad = ctx.createLinearGradient(x, y, x + w, y + h);
-  theme.borderStops.forEach((c, idx) => {
-    borderGrad.addColorStop(idx / Math.max(1, theme.borderStops.length - 1), c);
-  });
-  ctx.save();
-  drawRoundRect(ctx, x, y, w, h, 18);
-  ctx.lineWidth = 4.5;
-  ctx.strokeStyle = borderGrad;
-  if (theme.sparkle) {
-    ctx.shadowColor = theme.glowColor;
-    ctx.shadowBlur = 20;
-  }
-  ctx.stroke();
-  ctx.restore();
-
-  const pad = 26;
-
-  ctx.save();
-  ctx.font = `800 30px ${serverFontFamily}`;
-  ctx.fillStyle = theme.primary;
-  if (theme.sparkle) {
-    ctx.shadowColor = theme.glowColor;
-    ctx.shadowBlur = 14;
-  }
-  ctx.fillText(rankTitle || `T${rank.toLocaleString()} ボーダー`, x + pad, y + 54);
-  ctx.restore();
-
-  const badgeW = 136;
-  const badgeH = 40;
-  const badgeX = x + w - pad - badgeW;
-  const badgeY = y + 23;
-
-  ctx.save();
-  drawRoundRect(ctx, badgeX, badgeY, badgeW, badgeH, 10);
-  ctx.fillStyle = "rgba(255, 255, 255, 0.11)";
-  ctx.fill();
-  ctx.lineWidth = 2.2;
-  ctx.strokeStyle = borderGrad;
-  ctx.stroke();
-  ctx.fillStyle = theme.primary;
-  ctx.font = `800 20px ${serverFontFamily}`;
-  ctx.textAlign = "center";
-  ctx.fillText(`T${rank.toLocaleString()}`, badgeX + badgeW / 2, badgeY + 27);
-  ctx.restore();
-
-  if (!pred) {
-    ctx.fillStyle = "rgba(255, 255, 255, 0.65)";
-    ctx.font = `600 17px ${serverFontFamily}`;
-    ctx.fillText("データがまだ取得されていません。", x + pad, y + 120);
-    return;
-  }
-
-  const heroX = x + pad;
-  const heroY = y + 78;
-  const heroW = w - pad * 2;
-  const heroH = 122;
-  ctx.save();
-  drawRoundRect(ctx, heroX, heroY, heroW, heroH, 12);
-  ctx.fillStyle = "rgba(0, 0, 0, 0.36)";
-  ctx.fill();
-  ctx.lineWidth = 1.2;
-  ctx.strokeStyle = "rgba(255, 255, 255, 0.16)";
-  ctx.stroke();
-  ctx.restore();
-
-  ctx.fillStyle = "rgba(255, 255, 255, 0.74)";
-  ctx.font = `700 15px ${serverFontFamily}`;
-  ctx.fillText(pred.isFinished ? "最終確定ボーダー" : "最終着地予測ボーダー（本命）", heroX + 18, heroY + 28);
-
-  ctx.save();
-  ctx.font = `800 44px ${serverFontFamily}`;
-  if (theme.rainbow) {
-    const txtGrad = ctx.createLinearGradient(heroX + 18, 0, heroX + 380, 0);
-    txtGrad.addColorStop(0, "#ff758f");
-    txtGrad.addColorStop(0.35, "#ffd166");
-    txtGrad.addColorStop(0.7, "#06d6a0");
-    txtGrad.addColorStop(1, "#60a5fa");
-    ctx.fillStyle = txtGrad;
-  } else {
-    ctx.fillStyle = theme.forecast;
-  }
-  if (theme.sparkle) {
-    ctx.shadowColor = theme.glowColor;
-    ctx.shadowBlur = 16;
-  }
-  ctx.fillText(`${Engine.formatNumber(pred.centralFinal)} pt`, heroX + 18, heroY + 76);
-  ctx.restore();
-
-  if (!pred.isFinished) {
-    ctx.fillStyle = theme.accent;
-    ctx.font = `700 16px ${serverFontFamily}`;
-    ctx.fillText(
-      `誤差目安: ±${Engine.formatNumber(pred.halfSpread)} pt  (${Engine.formatNumber(pred.minFinal)} 〜 ${Engine.formatNumber(pred.maxFinal)})`,
-      heroX + 18,
-      heroY + 106
-    );
-  } else {
-    ctx.fillStyle = theme.accent;
-    ctx.font = `700 16px ${serverFontFamily}`;
-    ctx.fillText("イベント終了・確定スコア", heroX + 18, heroY + 106);
-  }
-
-  const gridY = heroY + heroH + 14;
-  const colW = (w - pad * 2 - 14) / 2;
-  const cellH = 44;
-  const subCells = [
-    { k: "現在スコア", v: `${Engine.formatNumber(pred.currentScore)} pt`, cx: x + pad, cy: gridY },
-    {
-      k: "経過 / 進捗",
-      v: `${pred.elapsedH.toFixed(1)}h / ${pred.totalH.toFixed(0)}h (${(pred.pCur * 100).toFixed(1)}%)`,
-      cx: x + pad + colW + 14,
-      cy: gridY,
-    },
-    { k: "直近時速", v: `${Engine.formatNumber(pred.recentPace)} pt/h`, cx: x + pad, cy: gridY + cellH + 8 },
-    {
-      k: "残り予測増分",
-      v: pred.isFinished ? "0 pt" : `+${Engine.formatNumber(Math.max(0, pred.centralFinal - pred.currentScore))} pt`,
-      cx: x + pad + colW + 14,
-      cy: gridY + cellH + 8,
-    },
-  ];
-
-  for (const cell of subCells) {
-    ctx.save();
-    drawRoundRect(ctx, cell.cx, cell.cy, colW, cellH, 8);
-    ctx.fillStyle = "rgba(255, 255, 255, 0.06)";
-    ctx.fill();
-    ctx.restore();
-
-    ctx.fillStyle = "rgba(255, 255, 255, 0.64)";
-    ctx.font = `600 14px ${serverFontFamily}`;
-    ctx.fillText(cell.k, cell.cx + 12, cell.cy + 27);
-
-    ctx.fillStyle = "#ffffff";
-    ctx.font = `700 15px ${serverFontFamily}`;
-    ctx.textAlign = "right";
-    ctx.fillText(cell.v, cell.cx + colW - 12, cell.cy + 27);
-    ctx.textAlign = "left";
-  }
-
-  const topSplitY = gridY + cellH * 2 + 20;
-  ctx.strokeStyle = "rgba(255, 255, 255, 0.16)";
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(x + pad, topSplitY);
-  ctx.lineTo(x + w - pad, topSplitY);
-  ctx.stroke();
-
-  const gBoxX = x + pad;
-  const gBoxY = topSplitY + 10;
-  const gBoxW = w - pad * 2;
-  const gBoxH = y + h - 20 - gBoxY;
-
-  ctx.save();
-  drawRoundRect(ctx, gBoxX, gBoxY, gBoxW, gBoxH, 12);
-  ctx.fillStyle = "rgba(0, 0, 0, 0.36)";
-  ctx.fill();
-  ctx.lineWidth = 1.2;
-  ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
-  ctx.stroke();
-  ctx.restore();
-
-  ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
-  ctx.font = `700 15px ${serverFontFamily}`;
-  ctx.fillText("推移実績 & 着地予測レンジ", gBoxX + 16, gBoxY + 26);
-
-  ctx.fillStyle = "rgba(255, 255, 255, 0.58)";
-  ctx.font = `600 13px ${serverFontFamily}`;
-  ctx.textAlign = "right";
-  ctx.fillText(`基準: ${Engine.formatJST(pred.lastT)}`, gBoxX + gBoxW - 16, gBoxY + 26);
-  ctx.textAlign = "left";
-
-  const gPadL = 68, gPadR = 18, gPadT = 40, gPadB = 32;
-  const plotX = gBoxX + gPadL;
-  const plotY = gBoxY + gPadT;
-  const plotW = gBoxW - gPadL - gPadR;
-  const plotH = gBoxH - gPadT - gPadB;
-
-  let maxY = Math.max(pred.maxFinal, pred.currentScore);
-  for (const m of pred.refModels.slice(0, 3)) maxY = Math.max(maxY, m.hFinal);
-  maxY = Math.ceil((maxY * 1.06) / 100000) * 100000 || 500000;
-
-  const xOf = (p) => plotX + Math.max(0, Math.min(1, p)) * plotW;
-  const yOf = (v) => plotY + plotH - (Math.max(0, v) / maxY) * plotH;
-
-  ctx.font = `600 13px ${serverFontFamily}`;
-  ctx.textAlign = "right";
-  for (let i = 0; i <= 4; i++) {
-    const val = (maxY * i) / 4;
-    const gy = yOf(val);
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.10)";
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(plotX, gy);
-    ctx.lineTo(plotX + plotW, gy);
-    ctx.stroke();
-
-    ctx.fillStyle = "rgba(255, 255, 255, 0.68)";
-    const lbl = val >= 10000 ? `${(val / 10000).toFixed(0)}万` : Engine.formatNumber(val);
-    ctx.fillText(lbl, plotX - 10, gy + 4);
-  }
-
-  ctx.textAlign = "center";
-  const stepH = pred.totalH <= 48 ? 12 : 24;
-  for (let hr = 0; hr <= pred.totalH; hr += stepH) {
-    const gx = xOf(hr / pred.totalH);
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.07)";
-    ctx.beginPath();
-    ctx.moveTo(gx, plotY);
-    ctx.lineTo(gx, plotY + plotH);
-    ctx.stroke();
-
-    ctx.fillStyle = "rgba(255, 255, 255, 0.68)";
-    ctx.fillText(`${hr}h`, gx, plotY + plotH + 20);
-  }
-  ctx.textAlign = "left";
-
-  pred.refModels.slice(0, 2).forEach((m) => {
-    const g = m.graph;
-    const dur = g.endTime - g.startTime;
-    ctx.save();
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.22)";
-    ctx.lineWidth = 1.4;
-    ctx.beginPath();
-    const step = Math.max(1, Math.floor(g.tier.length / 120));
-    for (let i = 0; i < g.tier.length; i += step) {
-      const [t, v] = g.tier[i];
-      const px = xOf((t - g.startTime) / dur);
-      const py = yOf(v);
-      if (i === 0) ctx.moveTo(px, py);
-      else ctx.lineTo(px, py);
-    }
-    ctx.stroke();
-    ctx.restore();
-  });
-
-  if (!pred.isFinished && pred.forecastSeries.length > 1) {
-    ctx.save();
-    ctx.fillStyle = theme.bandFill;
-    ctx.beginPath();
-    pred.forecastSeries.forEach((pt, i) => {
-      const px = xOf(pt.p);
-      const py = yOf(pt.max);
-      if (i === 0) ctx.moveTo(px, py);
-      else ctx.lineTo(px, py);
-    });
-    for (let i = pred.forecastSeries.length - 1; i >= 0; i--) {
-      const pt = pred.forecastSeries[i];
-      ctx.lineTo(xOf(pt.p), yOf(pt.min));
-    }
-    ctx.closePath();
-    ctx.fill();
-
-    ctx.setLineDash([7, 5]);
-    ctx.lineWidth = 3.2;
-    ctx.strokeStyle = theme.forecast;
-    if (theme.sparkle) {
-      ctx.shadowColor = theme.glowColor;
-      ctx.shadowBlur = 10;
-    }
-    ctx.beginPath();
-    pred.forecastSeries.forEach((pt, i) => {
-      const px = xOf(pt.p);
-      const py = yOf(pt.central);
-      if (i === 0) ctx.moveTo(px, py);
-      else ctx.lineTo(px, py);
-    });
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  const tPts = pred.targetGraph.tier;
-  const tDur = pred.targetGraph.endTime - pred.targetGraph.startTime;
-  ctx.save();
-  if (theme.rainbow) {
-    const lineGrad = ctx.createLinearGradient(plotX, 0, plotX + plotW, 0);
-    lineGrad.addColorStop(0, "#ff4d6d");
-    lineGrad.addColorStop(0.3, "#ffb703");
-    lineGrad.addColorStop(0.6, "#06d6a0");
-    lineGrad.addColorStop(1, "#3a86ff");
-    ctx.strokeStyle = lineGrad;
-  } else {
-    ctx.strokeStyle = theme.accent;
-  }
-  ctx.lineWidth = 3.8;
-  if (theme.sparkle) {
-    ctx.shadowColor = theme.glowColor;
-    ctx.shadowBlur = 12;
-  }
-  ctx.beginPath();
-  const step = Math.max(1, Math.floor(tPts.length / 180));
-  for (let i = 0; i < tPts.length; i += step) {
-    const [t, v] = tPts[i];
-    const px = xOf((t - pred.targetGraph.startTime) / tDur);
-    const py = yOf(v);
-    if (i === 0) ctx.moveTo(px, py);
-    else ctx.lineTo(px, py);
-  }
-  const [lt, lv] = tPts[tPts.length - 1];
-  const lx = xOf((lt - pred.targetGraph.startTime) / tDur);
-  const ly = yOf(lv);
-  ctx.lineTo(lx, ly);
-  ctx.stroke();
-
-  ctx.fillStyle = "#ffffff";
-  ctx.beginPath();
-  ctx.arc(lx, ly, 5.5, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
-
-  const endY = yOf(pred.centralFinal);
-  ctx.save();
-  ctx.fillStyle = theme.forecast;
-  ctx.beginPath();
-  ctx.arc(xOf(1), endY, 5.5, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
-}
-
-// =========================================================================
-// 6. holodori-border.com 新API自動取得 ＆ 定時配信スケジューラ
+// 5. holodori-border.com 新API自動取得 ＆ 定時配信スケジューラ
 // =========================================================================
 async function fetchActiveEventFromNewApi(now = Date.now()) {
   const evListRes = await fetch(`${HOLODORI_API_BASE}/events`);
@@ -1177,7 +689,22 @@ async function runAutomatedPollAndBroadcast(triggerReason = "scheduled", preFetc
     );
   }
 
-  const rendered = renderServerTripleImageBuffer(target, predsByRank);
+  // ★ 共通 Engine.createReportRenderer を使ってトリプル画像を直接レンダリング
+  const slots = TIER_DEFS.map((t) => ({
+    item: target,
+    rank: t.rank,
+    pred: predsByRank[t.rank] || null,
+  }));
+  const rendered = reportRenderer
+    ? reportRenderer.renderReportBuffer({
+        mode: "triple",
+        themeOverride: "auto",
+        slots,
+        primaryItem: target,
+        nowMs: now,
+      })
+    : null;
+
   if (rendered && rendered.buffer) {
     memStore.predictionCache = {
       imageBase64: rendered.buffer.toString("base64"),
@@ -1288,7 +815,7 @@ function startScheduledPoller() {
 }
 
 // =========================================================================
-// 7. Discord Bot ＆ スラッシュコマンド設定
+// 6. Discord Bot ＆ スラッシュコマンド設定
 // =========================================================================
 const client = new Client({
   intents: [GatewayIntentBits.Guilds],
@@ -1540,7 +1067,7 @@ client.on("interactionCreate", async (interaction) => {
 });
 
 // =========================================================================
-// 8. Express Webサーバー ＆ 管理画面API
+// 7. Express Webサーバー ＆ 管理画面API
 // =========================================================================
 app.use(express.json({ limit: "10mb" }));
 app.use(express.static(path.join(__dirname, "../public")));
@@ -1792,7 +1319,7 @@ app.post("/api/admin/broadcast", requireAdmin, upload.single("image"), async (re
 });
 
 // =========================================================================
-// 9. 起動シーケンス
+// 8. 起動シーケンス
 // =========================================================================
 (async () => {
   await ensureJapaneseFont();
