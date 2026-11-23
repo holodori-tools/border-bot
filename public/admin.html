@@ -3,2816 +3,1628 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>ボーダー予測Bot 管理コンソール</title>
+  <title>ホロドリ ボーダー着地予測＆Discord配信管理パネル</title>
+  <!-- 共通予測・整形エンジン（サーバー側 src/index.js と単一ソース共有） -->
+  <script src="/engine.js"></script>
   <style>
     :root {
-      --bg: #f1f5f9;
-      --surface: #ffffff;
-      --border: #cbd5e1;
-      --text: #0f172a;
-      --muted: #475569;
-      --accent: #1d4ed8;
-      --ok: #15803d;
-      --broadcast: #c2410c;
+      --bg-main: #0b0f19;
+      --bg-panel: #131929;
+      --bg-card: #1a2236;
+      --border: rgba(255, 255, 255, 0.12);
+      --text-main: #f1f5f9;
+      --text-sub: #94a3b8;
+      --accent: #38bdf8;
+      --accent-hover: #0284c7;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
     }
+
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      font-family: -apple-system, BlinkMacSystemFont, "Hiragino Kaku Gothic ProN", "Yu Gothic", "Noto Sans JP", sans-serif;
-      background: var(--bg);
-      color: var(--text);
-      font-size: 14px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
+      background: var(--bg-main);
+      color: var(--text-main);
+      line-height: 1.5;
     }
-    .login-overlay {
-      position: fixed;
-      inset: 0;
-      background: rgba(15, 23, 42, 0.88);
+
+    /* ログイン画面 */
+    #loginScreen {
+      min-height: 100vh;
       display: flex;
       align-items: center;
       justify-content: center;
-      z-index: 100;
+      padding: 20px;
+      background: radial-gradient(circle at 50% 20%, #1e293b 0%, #0b0f19 70%);
     }
-    .login-card {
-      background: #fff;
-      padding: 28px;
-      border-radius: 8px;
-      width: 340px;
-      box-shadow: 0 10px 25px rgba(0,0,0,0.3);
-    }
-    .login-card h2 { margin: 0 0 12px; font-size: 18px; }
-    .login-card input {
+    .login-box {
       width: 100%;
-      height: 38px;
-      padding: 0 12px;
+      max-width: 380px;
+      background: var(--bg-panel);
       border: 1px solid var(--border);
-      border-radius: 4px;
-      font-size: 15px;
-      margin-bottom: 12px;
+      border-radius: 16px;
+      padding: 32px 28px;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.55);
+      text-align: center;
     }
-    header {
-      background: #0f172a;
+    .login-box h1 {
+      margin: 0 0 8px;
+      font-size: 20px;
+      font-weight: 800;
+    }
+    .login-box p {
+      margin: 0 0 22px;
+      font-size: 13px;
+      color: var(--text-sub);
+    }
+    .login-box input {
+      width: 100%;
+      padding: 12px 14px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: #0b0f19;
       color: #fff;
+      font-size: 16px;
+      margin-bottom: 14px;
+      outline: none;
+    }
+    .login-box input:focus { border-color: var(--accent); }
+
+    /* ボタン共通 */
+    button {
+      cursor: pointer;
+      border: none;
+      border-radius: 10px;
+      font-weight: 700;
+      font-size: 14px;
+      padding: 10px 16px;
+      transition: 0.15s ease;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-primary { background: var(--accent); color: #082f49; }
+    .btn-primary:hover:not(:disabled) { background: #7dd3fc; }
+    .btn-success { background: var(--success); color: #022c22; }
+    .btn-success:hover:not(:disabled) { background: #34d399; }
+    .btn-warning { background: var(--warning); color: #271502; }
+    .btn-warning:hover:not(:disabled) { background: #fbbf24; }
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text-main);
+      border: 1px solid var(--border);
+    }
+    .btn-secondary:hover:not(:disabled) { background: rgba(255, 255, 255, 0.14); }
+    .btn-full { width: 100%; }
+
+    /* メイン管理画面 */
+    #appScreen { display: none; padding-bottom: 48px; }
+
+    header.topbar {
+      background: var(--bg-panel);
+      border-bottom: 1px solid var(--border);
       padding: 14px 24px;
       display: flex;
       flex-wrap: wrap;
       align-items: center;
       justify-content: space-between;
       gap: 12px;
+      position: sticky;
+      top: 0;
+      z-index: 20;
     }
-    header h1 { margin: 0; font-size: 17px; }
-    .status-pills { display: flex; flex-wrap: wrap; gap: 8px; font-size: 12px; }
-    .pill {
-      background: rgba(255,255,255,0.12);
-      padding: 4px 10px;
+    .topbar-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .topbar-title h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 800;
+    }
+    .badge {
+      font-size: 12px;
+      font-weight: 700;
+      padding: 3px 10px;
       border-radius: 999px;
+      background: rgba(56, 189, 248, 0.16);
+      color: var(--accent);
+      border: 1px solid rgba(56, 189, 248, 0.35);
     }
-    main {
-      max-width: 1360px;
-      margin: 20px auto 40px;
+    .topbar-actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .container {
+      max-width: 1440px;
+      margin: 20px auto 0;
       padding: 0 20px;
       display: flex;
       flex-direction: column;
-      gap: 16px;
+      gap: 18px;
     }
-    .panel {
-      background: var(--surface);
+
+    /* ステータスバー */
+    .status-strip {
+      background: var(--bg-panel);
       border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 16px;
-    }
-    .panel h2 {
-      margin: 0 0 12px;
-      font-size: 15px;
-      border-bottom: 1px solid #e2e8f0;
-      padding-bottom: 8px;
-    }
-    .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
-    button, select {
-      height: 36px;
-      padding: 0 14px;
-      border-radius: 5px;
-      border: 1px solid var(--border);
-      background: #fff;
+      border-radius: 12px;
+      padding: 12px 18px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
       font-size: 13px;
-      font-weight: 600;
-      cursor: pointer;
     }
-    button:hover { background: #f8fafc; }
-    button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
-    button.primary:hover { background: #1e40af; }
-    button.ok { background: var(--ok); color: #fff; border-color: var(--ok); }
-    button.ok:hover { background: #166534; }
-    button:disabled { opacity: 0.55; cursor: not-allowed; }
-    button.broadcast {
-      background: var(--broadcast);
-      color: #fff;
-      border-color: var(--broadcast);
-      height: 44px;
-      font-size: 15px;
-      padding: 0 24px;
+    .status-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 18px;
+      color: var(--text-sub);
     }
-    button.broadcast:hover { background: #9a3412; }
-    button.broadcast:disabled { opacity: 0.5; cursor: not-allowed; }
-    .toast {
-      padding: 10px 14px;
-      border-radius: 5px;
-      background: #dcfce7;
-      border: 1px solid #86efac;
-      color: #166534;
-      font-weight: 600;
-      display: none;
-    }
-    .toast.show { display: block; }
-    .preview-grid {
+    .status-meta strong { color: var(--text-main); }
+
+    /* コントロール＆グリッド */
+    .grid-2 {
       display: grid;
-      grid-template-columns: 1.75fr 1fr;
-      gap: 16px;
-      align-items: start;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 18px;
     }
-    .preview-img-wrap {
-      background: #090c15;
-      border-radius: 6px;
-      padding: 10px;
-      text-align: center;
+    @media (max-width: 1024px) {
+      .grid-2 { grid-template-columns: 1fr; }
     }
-    canvas#reportCanvas {
-      max-width: 100%;
-      height: auto;
-      border-radius: 4px;
+
+    .card {
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 18px 20px;
+    }
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 14px;
+      gap: 10px;
+    }
+    .card-header h2 {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 800;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    label.field-label {
       display: block;
-      margin: 0 auto;
-    }
-    .text-preview-box {
-      background: #1e293b;
-      color: #f8fafc;
-      padding: 14px;
-      border-radius: 6px;
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      white-space: pre-wrap;
-      line-height: 1.6;
-      font-size: 14px;
-    }
-    .diag-preview-box {
-      margin-top: 10px;
-      background: #f8fafc;
-      border: 1px solid #cbd5e1;
-      border-radius: 6px;
-      padding: 10px 12px;
       font-size: 12px;
-      color: #334155;
-      line-height: 1.6;
+      font-weight: 700;
+      color: var(--text-sub);
+      margin-bottom: 6px;
     }
-    .slot-editor {
+    select, input[type="text"], input[type="number"], textarea {
+      width: 100%;
+      background: #0b0f19;
+      color: var(--text-main);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 14px;
+      font-family: inherit;
+      outline: none;
+    }
+    select:focus, input:focus, textarea:focus { border-color: var(--accent); }
+    textarea { resize: vertical; line-height: 1.5; }
+
+    /* 3ランク個別カード＆手動補正 */
+    .tier-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+    }
+    @media (max-width: 960px) {
+      .tier-grid { grid-template-columns: 1fr; }
+    }
+    .tier-box {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px 16px;
       display: flex;
       flex-direction: column;
       gap: 8px;
-      margin-top: 10px;
-      padding: 12px;
-      background: #f8fafc;
-      border: 1px solid #e2e8f0;
-      border-radius: 6px;
     }
-    .custom-msg-box {
-      margin-top: 12px;
-      padding: 12px;
-      background: #fffbeb;
-      border: 1px solid #fde68a;
-      border-radius: 6px;
-    }
-    .mute-opt-label {
-      display: inline-flex;
+    .tier-box-top {
+      display: flex;
       align-items: center;
-      gap: 6px;
-      font-size: 13px;
-      font-weight: 700;
-      color: #334155;
-      background: #f8fafc;
-      border: 1px solid #cbd5e1;
-      border-radius: 5px;
-      padding: 0 12px;
-      height: 44px;
-      cursor: pointer;
-      user-select: none;
+      justify-content: space-between;
     }
-    .mute-opt-label input[type="checkbox"] {
-      width: 16px;
-      height: 16px;
-      cursor: pointer;
+    .tier-title {
+      font-size: 16px;
+      font-weight: 800;
+    }
+    .tier-rank-pill {
+      font-size: 12px;
+      font-weight: 800;
+      padding: 2px 8px;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.1);
+    }
+    .tier-pred-val {
+      font-size: 24px;
+      font-weight: 800;
+      color: #fbbf24;
+    }
+    .tier-sub-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
+      color: var(--text-sub);
+    }
+    .tier-sub-row span.val {
+      color: var(--text-main);
+      font-weight: 700;
+    }
+    .adj-control {
+      margin-top: 6px;
+      padding-top: 8px;
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .adj-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .adj-row input[type="range"] {
+      flex: 1;
       accent-color: var(--accent);
     }
-    textarea {
-      width: 100%;
-      height: 84px;
-      font-family: inherit;
+    .adj-row input[type="number"] {
+      width: 115px;
+      padding: 6px 8px;
       font-size: 13px;
-      padding: 8px 10px;
-      border: 1px solid var(--border);
-      border-radius: 4px;
-      resize: vertical;
+      text-align: right;
     }
-    @media (max-width: 960px) {
-      .preview-grid { grid-template-columns: 1fr; }
+
+    /* プレビューキャンバス */
+    .preview-wrap {
+      width: 100%;
+      overflow-x: auto;
+      background: #070a12;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px;
+      text-align: center;
+    }
+    canvas#tripleCanvas {
+      max-width: 100%;
+      height: auto;
+      border-radius: 8px;
+      display: block;
+      margin: 0 auto;
+    }
+
+    /* 配信コントロール */
+    .broadcast-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 12px;
+    }
+    @media (max-width: 640px) {
+      .broadcast-actions { grid-template-columns: 1fr; }
+    }
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: var(--text-main);
+      margin-top: 10px;
+      cursor: pointer;
+    }
+    .checkbox-row input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      accent-color: var(--accent);
+    }
+
+    /* トースト通知 */
+    #toast {
+      position: fixed;
+      bottom: 22px;
+      right: 22px;
+      background: #1e293b;
+      color: #fff;
+      border: 1px solid rgba(56, 189, 248, 0.5);
+      padding: 12px 18px;
+      border-radius: 12px;
+      font-size: 14px;
+      font-weight: 700;
+      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.55);
+      z-index: 100;
+      opacity: 0;
+      transform: translateY(12px);
+      pointer-events: none;
+      transition: 0.2s ease;
+    }
+    #toast.show {
+      opacity: 1;
+      transform: translateY(0);
     }
   </style>
 </head>
 <body>
-  <!-- ログインオーバーレイ -->
-  <div class="login-overlay" id="loginOverlay">
-    <form class="login-card" id="loginForm" onsubmit="event.preventDefault(); doLogin();">
-      <h2>管理コンソール ログイン</h2>
-      <input type="password" id="pwInput" placeholder="パスワードを入力" autocomplete="current-password" required />
-      <button type="submit" id="loginBtn" class="primary" style="width:100%;">ログイン</button>
-      <div id="loginErr" style="color:#dc2626;font-size:12px;margin-top:8px;"></div>
-    </form>
+
+  <!-- 1. ログイン画面 -->
+  <div id="loginScreen">
+    <div class="login-box">
+      <h1>ホロドリ ボーダー管理パネル</h1>
+      <p>管理者パスワードを入力してください</p>
+      <input type="password" id="passwordInput" placeholder="パスワード" autocomplete="current-password" />
+      <button id="loginBtn" class="btn-primary btn-full">ログイン</button>
+    </div>
   </div>
 
-  <!-- ヘッダー（v6 状況適応型・動的ベースライン版） -->
-  <header>
-    <h1>イベントボーダー予測Bot 管理コンソール（v6 状況適応型・動的ベースライン版）</h1>
-    <div class="status-pills">
-      <span class="pill" id="statArchive">GitHub過去データ: 読込中...</span>
-      <span class="pill" id="statEvents">イベント一覧キャッシュ: -</span>
-      <span class="pill" id="statSubs">通知購読チャンネル: -</span>
+  <!-- 2. 管理ダッシュボード -->
+  <div id="appScreen">
+    <header class="topbar">
+      <div class="topbar-title">
+        <h1>ホロドリ ボーダー予測 ＆ Discord配信管理</h1>
+        <span class="badge" id="subCountBadge">購読: - ch</span>
+      </div>
+      <div class="topbar-actions">
+        <button id="fetchApiBtn" class="btn-primary">🔄 APIから最新データ取得</button>
+        <button id="reloadAllBtn" class="btn-secondary">サーバー再同期</button>
+        <button id="logoutBtn" class="btn-secondary">ログアウト</button>
+      </div>
+    </header>
+
+    <div class="container">
+      <!-- ステータスバー -->
+      <div class="status-strip">
+        <div id="statusMessage" style="font-weight:700; color: var(--accent);">準備完了</div>
+        <div class="status-meta">
+          <span>自動API更新: <strong id="lastAutoFetchLabel">-</strong></span>
+          <span>手動更新: <strong id="lastManualUpdateLabel">-</strong></span>
+          <span>キャッシュ時刻: <strong id="cacheTimeLabel">-</strong></span>
+        </div>
+      </div>
+
+      <!-- イベント選択 ＆ 3ランク予測・手動補正 -->
+      <div class="card">
+        <div class="card-header">
+          <h2>📊 対象イベント・チャプター選択 ＆ 着地予測モデル</h2>
+          <div style="display:flex; gap:8px;">
+            <button id="saveAdjBtn" class="btn-secondary">補正値を保存</button>
+            <button id="resetAdjBtn" class="btn-secondary">補正リセット</button>
+          </div>
+        </div>
+
+        <div style="margin-bottom: 16px;">
+          <label class="field-label" for="eventSelect">表示・配信するイベント / チャプター</label>
+          <select id="eventSelect"></select>
+        </div>
+
+        <div class="tier-grid" id="tierCardsContainer"></div>
+      </div>
+
+      <!-- プレビュー画像 ＆ Discord一斉配信パネル -->
+      <div class="grid-2">
+        <!-- 左：トリプル比較画像プレビュー -->
+        <div class="card">
+          <div class="card-header">
+            <h2>🖼️ Discord配信用 予測画像プレビュー (2160×820)</h2>
+            <button id="downloadImgBtn" class="btn-secondary">画像を保存</button>
+          </div>
+          <div class="preview-wrap">
+            <canvas id="tripleCanvas" width="2160" height="820"></canvas>
+          </div>
+        </div>
+
+        <!-- 右：テキスト編集 ＆ 一斉配信・キャッシュ更新 -->
+        <div class="card">
+          <div class="card-header">
+            <h2>📣 Discord 一斉通知 ＆ キャッシュ更新</h2>
+            <button id="copyTextBtn" class="btn-secondary">テキストコピー</button>
+          </div>
+
+          <div style="margin-bottom: 12px;">
+            <label class="field-label" for="nowBorderTextarea">現在ボーダー本文（/nowborder・/border・定時通知共通）</label>
+            <textarea id="nowBorderTextarea" rows="5"></textarea>
+          </div>
+
+          <div style="margin-bottom: 12px;">
+            <label class="field-label" for="customTextInput">追加メッセージ（任意・一斉通知時のみ添付）</label>
+            <textarea id="customTextInput" rows="3" placeholder="例：終盤スパートに入りました！ラスト3時間は30分ごとに通知します。"></textarea>
+          </div>
+
+          <div style="display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px;">
+            <div style="min-width: 180px;">
+              <label class="field-label" for="customPosSelect">追加メッセージの配置</label>
+              <select id="customPosSelect">
+                <option value="below">画像・本文の下に送信</option>
+                <option value="above">本文の上に連結して送信</option>
+              </select>
+            </div>
+
+            <label class="checkbox-row">
+              <input type="checkbox" id="respectMuteCheck" checked />
+              <span>サーバー別の通知ミュート時間帯を尊重する</span>
+            </label>
+          </div>
+
+          <div class="broadcast-actions">
+            <button id="updateCacheOnlyBtn" class="btn-warning">💾 キャッシュのみ更新（通知なし）</button>
+            <button id="broadcastBtn" class="btn-success">🚀 キャッシュ更新 ＋ Discord一斉通知</button>
+          </div>
+        </div>
+      </div>
     </div>
-  </header>
+  </div>
 
-  <main>
-    <div class="toast" id="toastBox"></div>
-
-    <!-- Step 1: API取得 & クリップボード自動取込 -->
-    <section class="panel">
-      <h2>1. 最新データ取込（タブを開いて Ctrl+A → Ctrl+C で戻ると自動反映）</h2>
-      <div class="row" style="margin-bottom:10px;">
-        <label style="font-weight:700;">対象イベント:</label>
-        <select id="targetEventSelect" style="min-width:280px;"></select>
-        <button class="ok" id="fetchApiBtn" onclick="fetchFromServerApi()">🌐 APIから最新データを取得</button>
-        <button onclick="openListApi()">① イベント一覧API（新イベント時のみ）</button>
-        <button onclick="loadArchiveFromGithub(true)">GitHub過去データ再読込</button>
-      </div>
-      <div class="row">
-        <span style="font-weight:700;">② グラフAPIを開く:</span>
-        <button class="primary" onclick="openGraphApi(1000)">T1,000（ドリーム級）</button>
-        <button class="primary" onclick="openGraphApi(5000)">T5,000（ダイヤ級）</button>
-        <button class="primary" onclick="openGraphApi(10000)">T10,000（プラチナ級）</button>
-        <button class="primary" onclick="openGraphApi(100)">T100</button>
-        <button class="primary" onclick="openGraphApi(500)">T500</button>
-        <button class="primary" onclick="openGraphApi(50000)">T50,000</button>
-        <button class="ok" onclick="readClipboardNow(false)">📋 クリップボードから手動読込</button>
-      </div>
-      <div id="cachedRanksInfo" style="margin-top:8px;font-size:12px;color:var(--muted);"></div>
-      <details style="margin-top:10px;">
-        <summary style="cursor:pointer;font-size:12px;color:var(--muted);">スマホ等でクリップボード自動読取が使えない場合（JSON手動貼付）</summary>
-        <div style="margin-top:8px;">
-          <textarea id="manualJsonArea" style="font-family:monospace;font-size:12px;" placeholder='{"events":[...]} または {"tier":[[...]]}'></textarea>
-          <button class="primary" style="margin-top:6px;" onclick="submitManualJson()">JSONを反映</button>
-        </div>
-      </details>
-    </section>
-
-    <!-- Step 2: 配信レイアウト設定 -->
-    <section class="panel">
-      <h2>2. 配信画像レイアウト ＆ 任意お知らせテキスト設定</h2>
-      <div class="row">
-        <label style="font-weight:700;">画像レイアウト:</label>
-        <select id="modeSelect" onchange="onModeOrThemeChanged()">
-          <option value="triple" selected>トリプル（3枠横並び / 2160×820 ワイド）</option>
-          <option value="dual">デュアル（2枠比較 / 1600×900）</option>
-          <option value="single">シングル（1枠詳細 / 1600×900）</option>
-        </select>
-        <label style="font-weight:700;">テーマ色:</label>
-        <select id="themeSelect" onchange="onModeOrThemeChanged()">
-          <option value="auto" selected>順位連動（自動）</option>
-          <option value="rainbow">虹色</option>
-          <option value="purple">紫・輝く</option>
-          <option value="platinum">プラチナ</option>
-          <option value="gold">ゴールド</option>
-          <option value="silver">シルバー</option>
-          <option value="bronze">ブロンズ</option>
-        </select>
-      </div>
-      <div class="slot-editor" id="slotEditor"></div>
-
-      <!-- ランク別 5万pt単位 手動補正パネル -->
-      <div id="manualAdjustPanel" style="margin-top:12px;padding:12px 14px;background:#f8fafc;border:1px solid #cbd5e1;border-radius:6px;">
-        <div style="font-size:13px;font-weight:700;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;">
-          <span>🎚️ 着地予測 手動微調整（5万pt単位 / Shift+クリックで25万pt単位）</span>
-          <button type="button" onclick="resetAllManualAdjust()" style="height:28px;padding:0 10px;font-size:12px;">全ランク自動に戻す</button>
-        </div>
-        <div id="manualAdjustRows" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px;"></div>
-      </div>
-
-      <div class="custom-msg-box">
-        <div class="row" style="justify-content:space-between;margin-bottom:8px;">
-          <label style="font-weight:700;">📢 任意テキスト（お知らせ・補足コメントなど / 空欄なら送信しません）:</label>
-          <div class="row">
-            <label style="font-size:12px;font-weight:700;">送信位置:</label>
-            <select id="customTextPosSelect" onchange="updateTextPreviews()">
-              <option value="below" selected>BorderPrediction（画像）の下に2通目として送信</option>
-              <option value="above">NowBorder（テキスト）の上に配置して送信</option>
-            </select>
-          </div>
-        </div>
-        <textarea
-          id="customTextInput"
-          placeholder="例：※本日は最終日のため、21時にも臨時更新を行います！"
-          oninput="updateTextPreviews()"
-        ></textarea>
-      </div>
-    </section>
-
-    <!-- Step 3: プレビュー確認 & Bot一斉通知 -->
-    <section class="panel">
-      <div class="row" style="justify-content:space-between;margin-bottom:12px;">
-        <h2 style="border:none;margin:0;padding:0;">3. 配信内容プレビュー ＆ Bot一斉通知</h2>
-        <div class="row">
-          <label class="mute-opt-label" title="チェック時、各サーバーの /subscribe mutetime で設定された時間帯のチャンネルには送信をスキップします">
-            <input type="checkbox" id="chkRespectMuteTime" checked />
-            <span>サーバーごとのミュート時間設定を適用する</span>
-          </label>
-          <button class="ok" id="dataOnlyBtn" style="height:44px;padding:0 18px;" onclick="triggerBroadcast(false)">🔄 データのみ更新（通知は送信しない）</button>
-          <button class="broadcast" id="broadcastBtn" onclick="triggerBroadcast(true)">🚀 Botに反映（登録チャンネルへ一斉通知）</button>
-        </div>
-      </div>
-      <div class="preview-grid">
-        <div>
-          <div style="font-size:12px;font-weight:700;margin-bottom:6px;color:var(--muted);">
-            ▼ BorderPrediction（添付画像プレビュー・この画像がそのまま送信されます）
-          </div>
-          <div class="preview-img-wrap">
-            <canvas id="reportCanvas" width="2160" height="820"></canvas>
-          </div>
-        </div>
-        <div>
-          <div style="font-size:12px;font-weight:700;margin-bottom:6px;color:var(--muted);">
-            ▼ 送信テキスト構成プレビュー
-          </div>
-          <div class="text-preview-box" id="messageFlowPreview">読込中...</div>
-          <div class="diag-preview-box" id="diagTagsPreview">予測診断ログ: データ待機中...</div>
-        </div>
-      </div>
-    </section>
-  </main>
+  <div id="toast"></div>
 
   <script>
-    const API_BASE = "https://api.holodori.best/api/events";
-    const GITHUB_ARCHIVE_BASE = "https://raw.githubusercontent.com/holodori-tools/event-borders/main/archive";
-    const DAYS_JP = ["日", "月", "火", "水", "木", "金", "土"];
-    const TIER_DEFS = [
-      { rank: 1000, label: "ドリーム級" },
-      { rank: 5000, label: "ダイヤ級" },
-      { rank: 10000, label: "プラチナ級" },
-    ];
+    (() => {
+      // 共通エンジン（public/engine.js）
+      const Engine = window.HolodoriEngine;
+      const { TIER_DEFS } = Engine;
+      const GITHUB_ARCHIVE_BASE = "https://raw.githubusercontent.com/holodori-tools/event-borders/main/archive";
 
-    let adminPassword = sessionStorage.getItem("admin_pw") || "";
-    let lastClipboardText = "";
-    let pendingHint = { key: null, rank: null };
+      // アプリケーション状態
+      const state = {
+        password: sessionStorage.getItem("holodori_admin_pw") || "",
+        events: [],
+        graphs: {},
+        archiveItems: [],
+        archiveGraphs: {},
+        manualAdjustments: {},
+        guildSettings: {},
+        subscriptionCount: 0,
+        lastManualUpdateAt: 0,
+        lastAutoFetchAt: 0,
+        nowBorderCache: null,
+        predictionCacheMeta: null,
+        allTargets: [],
+        selectedKey: "",
+        predsByRank: {},
+        textManuallyEdited: false,
+      };
 
-    const state = {
-      archiveItems: [],
-      events: [],
-      eligibleItems: [],
-      graphCache: new Map(), // `${key}::${rank}` -> graphData
-      manualAdjustments: {}, // { [eventKey]: { 1000: -50000, ... } }
-      selectedKey: null,
-      mode: "triple",
-      themeOverride: "auto",
-      single: { key: null, rank: 5000 },
-      dual: [
-        { key: null, rank: 1000 },
-        { key: null, rank: 5000 },
-      ],
-      triple: [
-        { key: null, rank: 1000 },
-        { key: null, rank: 5000 },
-        { key: null, rank: 10000 },
-      ],
-    };
+      // DOM要素
+      const el = {
+        loginScreen: document.getElementById("loginScreen"),
+        appScreen: document.getElementById("appScreen"),
+        passwordInput: document.getElementById("passwordInput"),
+        loginBtn: document.getElementById("loginBtn"),
+        logoutBtn: document.getElementById("logoutBtn"),
+        fetchApiBtn: document.getElementById("fetchApiBtn"),
+        reloadAllBtn: document.getElementById("reloadAllBtn"),
+        subCountBadge: document.getElementById("subCountBadge"),
+        statusMessage: document.getElementById("statusMessage"),
+        lastAutoFetchLabel: document.getElementById("lastAutoFetchLabel"),
+        lastManualUpdateLabel: document.getElementById("lastManualUpdateLabel"),
+        cacheTimeLabel: document.getElementById("cacheTimeLabel"),
+        eventSelect: document.getElementById("eventSelect"),
+        tierCardsContainer: document.getElementById("tierCardsContainer"),
+        saveAdjBtn: document.getElementById("saveAdjBtn"),
+        resetAdjBtn: document.getElementById("resetAdjBtn"),
+        tripleCanvas: document.getElementById("tripleCanvas"),
+        downloadImgBtn: document.getElementById("downloadImgBtn"),
+        nowBorderTextarea: document.getElementById("nowBorderTextarea"),
+        copyTextBtn: document.getElementById("copyTextBtn"),
+        customTextInput: document.getElementById("customTextInput"),
+        customPosSelect: document.getElementById("customPosSelect"),
+        respectMuteCheck: document.getElementById("respectMuteCheck"),
+        updateCacheOnlyBtn: document.getElementById("updateCacheOnlyBtn"),
+        broadcastBtn: document.getElementById("broadcastBtn"),
+        toast: document.getElementById("toast"),
+      };
 
-    function showToast(msg) {
-      const el = document.getElementById("toastBox");
-      el.textContent = msg;
-      el.classList.add("show");
-      clearTimeout(el._t);
-      el._t = setTimeout(() => el.classList.remove("show"), 6000);
-    }
-
-    function formatNumber(n) {
-      if (n == null || Number.isNaN(n)) return "-";
-      return Math.round(n).toLocaleString("ja-JP");
-    }
-
-    function formatJST(ms, withDate = true) {
-      const jst = new Date(ms + 9 * 3600 * 1000);
-      const m = String(jst.getUTCMonth() + 1).padStart(2, "0");
-      const day = String(jst.getUTCDate()).padStart(2, "0");
-      const wd = DAYS_JP[jst.getUTCDay()];
-      const hh = String(jst.getUTCHours()).padStart(2, "0");
-      const mm = String(jst.getUTCMinutes()).padStart(2, "0");
-      return withDate ? `${m}/${day}(${wd}) ${hh}:${mm}` : `${hh}:${mm}`;
-    }
-
-    function getEventCategory(ev) {
-      if (!ev || !ev.hasData) return null;
-      const name = ev.name || "";
-      if (ev.type === 2 || name.includes("スポットライト")) return "spotlight";
-      if ((ev.type === 1 && ev.isSongScore === false) || name.includes("ポイント")) return "point";
-      return null;
-    }
-
-    // =========================================================================
-    // 1. 認証 ＆ サーバー通信
-    // =========================================================================
-    async function apiFetch(url, options = {}) {
-      const headers = { ...(options.headers || {}), "x-admin-password": adminPassword };
-      if (options.body && typeof options.body === "object" && !(options.body instanceof FormData)) {
-        headers["Content-Type"] = "application/json";
-        options.body = JSON.stringify(options.body);
-      }
-      const res = await fetch(url, { ...options, headers });
-      if (res.status === 401) {
-        sessionStorage.removeItem("admin_pw");
-        document.getElementById("loginOverlay").style.display = "flex";
-        throw new Error("Unauthorized");
-      }
-      return res;
-    }
-
-    async function doLogin() {
-      const pwInput = document.getElementById("pwInput");
-      const btn = document.getElementById("loginBtn");
-      const errEl = document.getElementById("loginErr");
-      const pw = pwInput ? pwInput.value : "";
-
-      if (!pw) {
-        errEl.textContent = "パスワードを入力してください。";
-        return;
+      let toastTimer = null;
+      function showToast(msg) {
+        el.toast.textContent = msg;
+        el.toast.classList.add("show");
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => el.toast.classList.remove("show"), 3400);
       }
 
-      errEl.textContent = "";
-      if (btn) {
-        btn.disabled = true;
-        btn.textContent = "ログイン中...";
+      function setStatus(msg, color = "var(--accent)") {
+        el.statusMessage.textContent = msg;
+        el.statusMessage.style.color = color;
       }
 
-      try {
+      async function apiFetch(url, options = {}) {
+        const headers = {
+          ...(options.headers || {}),
+          "x-admin-password": state.password,
+        };
+        const res = await fetch(url, { ...options, headers });
+        if (res.status === 401) {
+          sessionStorage.removeItem("holodori_admin_pw");
+          state.password = "";
+          el.appScreen.style.display = "none";
+          el.loginScreen.style.display = "flex";
+          throw new Error("認証エラー：再ログインしてください。");
+        }
+        return res;
+      }
+
+      // -----------------------------------------------------------------------
+      // GitHub過去アーカイブ読込
+      // -----------------------------------------------------------------------
+      async function loadArchiveFromGithub() {
+        try {
+          const res = await fetch(`${GITHUB_ARCHIVE_BASE}/index.json?t=${Math.floor(Date.now() / 60000)}`, {
+            cache: "no-store",
+          });
+          if (!res.ok) return;
+          const manifest = await res.json();
+          const entries = Array.isArray(manifest) ? manifest : Array.isArray(manifest.items) ? manifest.items : [];
+
+          const items = [];
+          const graphs = {};
+
+          for (const ent of entries) {
+            const tierEntries = [];
+            for (const [k, val] of Object.entries(ent)) {
+              const m = /^t(\d+)$/i.exec(k);
+              if (m && typeof val === "string" && val.trim() !== "") {
+                tierEntries.push({ rankHint: Number(m[1]), file: val.trim() });
+              }
+            }
+            if (tierEntries.length === 0 && typeof ent.file === "string") {
+              tierEntries.push({ rankHint: ent.rank || 5000, file: ent.file.trim() });
+            }
+
+            const displayName = ent.tag || ent.name || ent.chapterId || ent.eventId || "archive";
+            const key = ent.eventId && ent.chapterId ? `${ent.eventId}::${ent.chapterId}` : `archive::${displayName}`;
+
+            const fetched = await Promise.all(
+              tierEntries.map(async (te) => {
+                try {
+                  const gRes = await fetch(`${GITHUB_ARCHIVE_BASE}/${te.file}`);
+                  if (!gRes.ok) return null;
+                  const graph = await gRes.json();
+                  if (!graph || !Array.isArray(graph.tier) || graph.tier.length === 0) return null;
+                  return { actualRank: Number(graph.rank) || te.rankHint, graph };
+                } catch (_) {
+                  return null;
+                }
+              })
+            );
+
+            let repGraph = null;
+            for (const item of fetched) {
+              if (!item) continue;
+              graphs[`${key}::${item.actualRank}`] = item.graph;
+              if (!repGraph) repGraph = item.graph;
+            }
+
+            if (repGraph) {
+              const durH = (repGraph.endTime - repGraph.startTime) / 3600000;
+              const cat = ent.category || "spotlight";
+              items.push({
+                key,
+                eventId: ent.eventId || "archive",
+                chapterId: ent.chapterId || displayName,
+                category: cat,
+                catLabel: cat === "point" ? "ポイントイベント" : "スポットライト",
+                eventName: displayName,
+                chapterName: null,
+                shortLabel: displayName,
+                startTime: repGraph.startTime,
+                endTime: repGraph.endTime,
+                durationH: durH,
+                live: false,
+                isArchive: true,
+              });
+            }
+          }
+
+          state.archiveItems = items;
+          state.archiveGraphs = graphs;
+        } catch (err) {
+          console.warn("[Archive] 読込エラー:", err);
+        }
+      }
+
+      // -----------------------------------------------------------------------
+      // イベント＆チャプター一覧構築
+      // -----------------------------------------------------------------------
+      function buildTargetList() {
+        const list = [];
+        const seen = new Set();
+
+        // 1. Redis上の最新・開催中イベント群
+        for (const ev of state.events) {
+          if (!ev || !ev.eventId || ev.isSongScore) continue;
+          const isRelay = Number(ev.type) === 2 || (Array.isArray(ev.chapters) && ev.chapters.length > 1);
+          const category = isRelay ? "spotlight" : "point";
+          const catLabel = isRelay ? "スポットライト" : "ポイントイベント";
+
+          if (Array.isArray(ev.chapters) && ev.chapters.length > 0) {
+            for (const chId of ev.chapters) {
+              const key = `${ev.eventId}::${chId}`;
+              if (seen.has(key)) continue;
+              const meta = ev.chapterMeta?.[chId] || {};
+              const repGraph =
+                state.graphs[`${key}::5000`] ||
+                state.graphs[`${key}::1000`] ||
+                state.graphs[`${key}::10000`];
+              const st = meta.startTime || repGraph?.startTime || ev.startTime;
+              const et = meta.endTime || repGraph?.endTime || ev.endTime;
+              if (!st || !et) continue;
+
+              const now = Date.now();
+              const live = now >= st && now <= et;
+              const chName = meta.name || null;
+              const shortCh = meta.shortName || chId;
+
+              seen.add(key);
+              list.push({
+                key,
+                eventId: ev.eventId,
+                chapterId: chId,
+                category,
+                catLabel,
+                eventName: ev.name || ev.eventId,
+                chapterName: chName,
+                shortLabel: chName ? `${ev.name} / ${shortCh}` : ev.name || ev.eventId,
+                startTime: st,
+                endTime: et,
+                durationH: (et - st) / 3600000,
+                live,
+                hasGraphs: Boolean(repGraph),
+              });
+            }
+          } else {
+            // チャプター配列がない場合、graphsのキーから探索
+            const prefixCandidates = new Set();
+            for (const gKey of Object.keys(state.graphs)) {
+              if (gKey.startsWith(`${ev.eventId}::`)) {
+                prefixCandidates.add(gKey.replace(/::\d+$/, ""));
+              }
+            }
+            if (prefixCandidates.size === 0 && ev.startTime && ev.endTime) {
+              prefixCandidates.add(`${ev.eventId}::default`);
+            }
+            for (const key of prefixCandidates) {
+              if (seen.has(key)) continue;
+              const repGraph =
+                state.graphs[`${key}::5000`] ||
+                state.graphs[`${key}::1000`] ||
+                state.graphs[`${key}::10000`];
+              const st = repGraph?.startTime || ev.startTime;
+              const et = repGraph?.endTime || ev.endTime;
+              if (!st || !et) continue;
+
+              const now = Date.now();
+              seen.add(key);
+              list.push({
+                key,
+                eventId: ev.eventId,
+                chapterId: key.split("::")[1] || "default",
+                category,
+                catLabel,
+                eventName: ev.name || ev.eventId,
+                chapterName: null,
+                shortLabel: ev.name || ev.eventId,
+                startTime: st,
+                endTime: et,
+                durationH: (et - st) / 3600000,
+                live: now >= st && now <= et,
+                hasGraphs: Boolean(repGraph),
+              });
+            }
+          }
+        }
+
+        // 2. graphs にのみ存在するキー補完
+        const graphPrefixes = new Set(Object.keys(state.graphs).map((k) => k.replace(/::\d+$/, "")));
+        for (const key of graphPrefixes) {
+          if (seen.has(key)) continue;
+          const repGraph =
+            state.graphs[`${key}::5000`] ||
+            state.graphs[`${key}::1000`] ||
+            state.graphs[`${key}::10000`];
+          if (!repGraph) continue;
+          const durH = (repGraph.endTime - repGraph.startTime) / 3600000;
+          const isSpot = durH <= 80;
+          seen.add(key);
+          list.push({
+            key,
+            eventId: repGraph.eventId || key.split("::")[0],
+            chapterId: repGraph.chapterId || key.split("::")[1] || "default",
+            category: isSpot ? "spotlight" : "point",
+            catLabel: isSpot ? "スポットライト" : "ポイントイベント",
+            eventName: repGraph.eventId || key,
+            chapterName: null,
+            shortLabel: key,
+            startTime: repGraph.startTime,
+            endTime: repGraph.endTime,
+            durationH: durH,
+            live: Date.now() >= repGraph.startTime && Date.now() <= repGraph.endTime,
+            hasGraphs: true,
+          });
+        }
+
+        // 3. 過去アーカイブ補完
+        for (const aItem of state.archiveItems) {
+          if (seen.has(aItem.key)) continue;
+          seen.add(aItem.key);
+          list.push({ ...aItem, hasGraphs: true });
+        }
+
+        // ソート：開催中 > グラフデータ有り新しい順 > 開始日時新しい順
+        list.sort((a, b) => {
+          if (a.live !== b.live) return a.live ? -1 : 1;
+          if (Boolean(a.hasGraphs) !== Boolean(b.hasGraphs)) return a.hasGraphs ? -1 : 1;
+          return (b.startTime || 0) - (a.startTime || 0);
+        });
+
+        state.allTargets = list;
+
+        // プルダウン描画
+        el.eventSelect.innerHTML = "";
+        for (const item of list) {
+          const opt = document.createElement("option");
+          opt.value = item.key;
+          const statusTag = item.live ? "🔴開催中" : item.isArchive ? "📦過去アーカイブ" : "⚪終了";
+          opt.textContent = `[${statusTag}] ${item.shortLabel} (${Engine.formatJST(item.startTime, true)}〜)`;
+          el.eventSelect.appendChild(opt);
+        }
+
+        if (!state.selectedKey || !list.some((i) => i.key === state.selectedKey)) {
+          state.selectedKey = list[0]?.key || "";
+        }
+        el.eventSelect.value = state.selectedKey;
+      }
+
+      // -----------------------------------------------------------------------
+      // 予測計算（Engine.computePrediction を使用）＆ UI・Canvas更新
+      // -----------------------------------------------------------------------
+      function recalculateAndRender() {
+        const target = state.allTargets.find((t) => t.key === state.selectedKey);
+        if (!target) return;
+
+        const predsByRank = {};
+        const graphsByRank = {};
+        const adjMap = state.manualAdjustments[target.key] || {};
+
+        for (const tierDef of TIER_DEFS) {
+          const gKey = `${target.key}::${tierDef.rank}`;
+          const targetGraph = state.graphs[gKey] || state.archiveGraphs[gKey] || null;
+          graphsByRank[tierDef.rank] = targetGraph;
+
+          if (!targetGraph || !Array.isArray(targetGraph.tier) || targetGraph.tier.length === 0) {
+            predsByRank[tierDef.rank] = null;
+            continue;
+          }
+
+          // 参照過去データ収集
+          const refPairs = [];
+          for (const aItem of state.archiveItems) {
+            if (aItem.key === target.key || aItem.category !== target.category) continue;
+            const g = state.archiveGraphs[`${aItem.key}::${tierDef.rank}`];
+            if (g) refPairs.push({ item: aItem, graph: g });
+          }
+          for (const [k, gVal] of Object.entries(state.graphs)) {
+            if (!k.endsWith(`::${tierDef.rank}`) || k.startsWith(`${target.key}::`)) continue;
+            if (!gVal || !Array.isArray(gVal.tier) || gVal.tier.length < 15) continue;
+            const gProg =
+              (gVal.tier[gVal.tier.length - 1][0] - gVal.startTime) /
+              Math.max(1, gVal.endTime - gVal.startTime);
+            if (gProg < 0.98) continue;
+            const prefix = k.replace(/::\d+$/, "");
+            refPairs.push({
+              item: {
+                key: prefix,
+                eventId: gVal.eventId || prefix,
+                chapterId: gVal.chapterId || prefix,
+                category: target.category,
+                durationH: (gVal.endTime - gVal.startTime) / 3600000,
+                live: false,
+              },
+              graph: gVal,
+            });
+          }
+
+          predsByRank[tierDef.rank] = Engine.computePrediction(
+            target,
+            targetGraph,
+            refPairs,
+            tierDef.rank,
+            Number(adjMap[tierDef.rank]) || 0
+          );
+        }
+
+        state.predsByRank = predsByRank;
+
+        // 3ランクカードUI更新
+        renderTierCards(target, predsByRank);
+
+        // NowBorderテキスト自動生成（手動編集中でなければ反映）
+        if (!state.textManuallyEdited) {
+          const built = Engine.buildNowBorderText(graphsByRank);
+          if (built) {
+            el.nowBorderTextarea.value = built.text;
+          } else if (state.nowBorderCache?.text) {
+            el.nowBorderTextarea.value = state.nowBorderCache.text;
+          } else {
+            el.nowBorderTextarea.value = "";
+          }
+        }
+
+        // トリプルCanvas描画
+        renderTripleCanvas(target, predsByRank);
+      }
+
+      function renderTierCards(target, predsByRank) {
+        el.tierCardsContainer.innerHTML = "";
+        const adjMap = state.manualAdjustments[target.key] || {};
+
+        for (const tierDef of TIER_DEFS) {
+          const pred = predsByRank[tierDef.rank];
+          const theme = Engine.getTierTheme(tierDef.rank);
+          const curAdj = Number(adjMap[tierDef.rank]) || 0;
+
+          const box = document.createElement("div");
+          box.className = "tier-box";
+          box.style.borderColor = theme.borderStops[0];
+
+          if (!pred) {
+            box.innerHTML = `
+              <div class="tier-box-top">
+                <span class="tier-title" style="color:${theme.primary}">${tierDef.label}</span>
+                <span class="tier-rank-pill">T${tierDef.rank.toLocaleString()}</span>
+              </div>
+              <div style="color:var(--text-sub); font-size:13px; padding:18px 0;">データ未取得</div>
+            `;
+            el.tierCardsContainer.appendChild(box);
+            continue;
+          }
+
+          box.innerHTML = `
+            <div class="tier-box-top">
+              <span class="tier-title" style="color:${theme.primary}">${tierDef.label}</span>
+              <span class="tier-rank-pill">T${tierDef.rank.toLocaleString()}</span>
+            </div>
+            <div class="tier-pred-val" style="color:${theme.forecast}">
+              ${Engine.formatNumber(pred.centralFinal)} pt
+            </div>
+            <div class="tier-sub-row">
+              <span>現在スコア</span>
+              <span class="val">${Engine.formatNumber(pred.currentScore)} pt</span>
+            </div>
+            <div class="tier-sub-row">
+              <span>予測レンジ</span>
+              <span class="val">${Engine.formatNumber(pred.minFinal)} 〜 ${Engine.formatNumber(pred.maxFinal)}</span>
+            </div>
+            <div class="tier-sub-row">
+              <span>直近時速 / 類似度</span>
+              <span class="val">${Engine.formatNumber(pred.recentPace)} pt/h (${Math.round((pred.metaInfo?.topShapeSim || 0) * 100)}%)</span>
+            </div>
+            <div class="adj-control">
+              <div class="tier-sub-row">
+                <span>手動着地補正 (pt)</span>
+                <span class="val" style="color:${curAdj !== 0 ? "#38bdf8" : "var(--text-sub)"}">
+                  ${curAdj > 0 ? "+" : ""}${Engine.formatNumber(curAdj)} pt
+                </span>
+              </div>
+              <div class="adj-row">
+                <input type="range" min="-500000" max="500000" step="5000" value="${curAdj}" data-rank="${tierDef.rank}" class="adj-slider" />
+                <input type="number" step="5000" value="${curAdj}" data-rank="${tierDef.rank}" class="adj-num" />
+              </div>
+            </div>
+          `;
+          el.tierCardsContainer.appendChild(box);
+        }
+
+        // 補正スライダー＆数値入力イベント
+        el.tierCardsContainer.querySelectorAll(".adj-slider, .adj-num").forEach((inp) => {
+          inp.addEventListener("input", (e) => {
+            const r = e.target.dataset.rank;
+            const val = Number(e.target.value) || 0;
+            if (!state.manualAdjustments[target.key]) state.manualAdjustments[target.key] = {};
+            state.manualAdjustments[target.key][r] = val;
+            recalculateAndRender();
+          });
+        });
+      }
+
+      // -----------------------------------------------------------------------
+      // トリプル比較 Canvas 描画（サーバー側と完全同一レイアウト・共通テーマ）
+      // -----------------------------------------------------------------------
+      function drawRoundRect(ctx, x, y, w, h, r) {
+        ctx.beginPath();
+        ctx.moveTo(x + r, y);
+        ctx.arcTo(x + w, y, x + w, y + h, r);
+        ctx.arcTo(x + w, y + h, x, y + h, r);
+        ctx.arcTo(x, y + h, x, y, r);
+        ctx.arcTo(x, y, x + w, y, r);
+        ctx.closePath();
+      }
+
+      function drawFittedText(ctx, text, x, y, maxWidth) {
+        let str = String(text || "");
+        if (ctx.measureText(str).width <= maxWidth) {
+          ctx.fillText(str, x, y);
+          return;
+        }
+        while (str.length > 1 && ctx.measureText(str + "…").width > maxWidth) {
+          str = str.slice(0, -1);
+        }
+        ctx.fillText(str + "…", x, y);
+      }
+
+      function renderTripleCanvas(targetItem, predsByRank) {
+        const canvas = el.tripleCanvas;
+        const ctx = canvas.getContext("2d");
+        const W = 2160;
+        const H = 820;
+        const fontFam = '"Hiragino Kaku Gothic ProN", "Yu Gothic", "Meiryo", sans-serif';
+
+        const baseBg = ctx.createLinearGradient(0, 0, W, H);
+        baseBg.addColorStop(0, "#090c15");
+        baseBg.addColorStop(0.5, "#111626");
+        baseBg.addColorStop(1, "#090c15");
+        ctx.fillStyle = baseBg;
+        ctx.fillRect(0, 0, W, H);
+
+        const marginX = 32;
+        const gapX = 24;
+        const topBarY = 22;
+        const topBarH = 88;
+
+        ctx.save();
+        drawRoundRect(ctx, marginX, topBarY, W - marginX * 2, topBarH, 14);
+        ctx.fillStyle = "rgba(255, 255, 255, 0.05)";
+        ctx.fill();
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.14)";
+        ctx.stroke();
+        ctx.restore();
+
+        ctx.save();
+        drawRoundRect(ctx, marginX + 16, topBarY + 16, 6, topBarH - 32, 3);
+        ctx.fillStyle = "#38bdf8";
+        ctx.fill();
+        ctx.restore();
+
+        ctx.fillStyle = "rgba(255, 255, 255, 0.68)";
+        ctx.font = `600 16px ${fontFam}`;
+        ctx.fillText(
+          `${targetItem.catLabel}  ｜  開催期間: ${Engine.formatJST(targetItem.startTime)} 〜 ${Engine.formatJST(targetItem.endTime)}`,
+          marginX + 36,
+          topBarY + 32
+        );
+
+        const fullTitle = targetItem.chapterName
+          ? `${targetItem.eventName}  ／  ${targetItem.chapterName}`
+          : targetItem.eventName;
+
+        ctx.fillStyle = "#ffffff";
+        ctx.font = `800 32px ${fontFam}`;
+        drawFittedText(ctx, fullTitle, marginX + 36, topBarY + 72, W - marginX * 2 - 420);
+
+        ctx.fillStyle = "rgba(255, 255, 255, 0.72)";
+        ctx.font = `700 16px ${fontFam}`;
+        ctx.textAlign = "right";
+        ctx.fillText("BORDER FORECAST OVERVIEW", W - marginX - 22, topBarY + 34);
+
+        ctx.fillStyle = "rgba(255, 255, 255, 0.52)";
+        ctx.font = `600 15px ${fontFam}`;
+        ctx.fillText(`Generated at ${Engine.formatJST(Date.now())} JST`, W - marginX - 22, topBarY + 68);
+        ctx.textAlign = "left";
+
+        const cardY = topBarY + topBarH + 18;
+        const cardH = H - cardY - 24;
+        const cardW = (W - marginX * 2 - gapX * 2) / 3;
+
+        TIER_DEFS.forEach((tierDef, idx) => {
+          const cx = marginX + idx * (cardW + gapX);
+          const pred = predsByRank[tierDef.rank] || null;
+          drawComparisonSlot(ctx, cx, cardY, cardW, cardH, pred, tierDef.rank, fontFam);
+        });
+      }
+
+      function drawComparisonSlot(ctx, x, y, w, h, pred, rank, fontFam) {
+        const theme = Engine.getTierTheme(rank);
+        const rankTitle = Engine.getTierRankTitle(rank);
+
+        ctx.save();
+        drawRoundRect(ctx, x, y, w, h, 18);
+        const cardBg = ctx.createLinearGradient(x, y, x + w, y + h);
+        cardBg.addColorStop(0, theme.bgStops[0]);
+        cardBg.addColorStop(0.5, theme.bgStops[1]);
+        cardBg.addColorStop(1, theme.bgStops[2]);
+        ctx.fillStyle = cardBg;
+        ctx.fill();
+
+        const aura = ctx.createRadialGradient(x + w * 0.8, y + 80, 15, x + w * 0.8, y + 80, 320);
+        aura.addColorStop(0, theme.glowColor);
+        aura.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.fillStyle = aura;
+        ctx.fillRect(x, y, w, h);
+
+        if (theme.rainbow) {
+          const rbAura = ctx.createLinearGradient(x, y, x + w, y + h);
+          rbAura.addColorStop(0, "rgba(255, 77, 109, 0.14)");
+          rbAura.addColorStop(0.35, "rgba(255, 183, 3, 0.12)");
+          rbAura.addColorStop(0.7, "rgba(6, 214, 160, 0.12)");
+          rbAura.addColorStop(1, "rgba(58, 134, 255, 0.16)");
+          ctx.fillStyle = rbAura;
+          ctx.fillRect(x, y, w, h);
+        }
+        ctx.restore();
+
+        if (theme.sparkle) {
+          const relStars = [
+            [44, 46, 2.8], [w - 50, 40, 3.2], [w - 100, 125, 2.5],
+            [w - 44, h - 46, 2.8], [52, h - 42, 2.3], [w * 0.55, 32, 2.2],
+          ];
+          for (const [sx, sy, sr] of relStars) {
+            ctx.save();
+            ctx.fillStyle = "#ffffff";
+            ctx.shadowColor = theme.forecast;
+            ctx.shadowBlur = 14;
+            ctx.beginPath();
+            ctx.arc(x + sx, y + sy, sr, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+          }
+        }
+
+        const borderGrad = ctx.createLinearGradient(x, y, x + w, y + h);
+        theme.borderStops.forEach((c, idx) => {
+          borderGrad.addColorStop(idx / Math.max(1, theme.borderStops.length - 1), c);
+        });
+        ctx.save();
+        drawRoundRect(ctx, x, y, w, h, 18);
+        ctx.lineWidth = 4.5;
+        ctx.strokeStyle = borderGrad;
+        if (theme.sparkle) {
+          ctx.shadowColor = theme.glowColor;
+          ctx.shadowBlur = 20;
+        }
+        ctx.stroke();
+        ctx.restore();
+
+        const pad = 26;
+
+        ctx.save();
+        ctx.font = `800 30px ${fontFam}`;
+        ctx.fillStyle = theme.primary;
+        if (theme.sparkle) {
+          ctx.shadowColor = theme.glowColor;
+          ctx.shadowBlur = 14;
+        }
+        ctx.fillText(rankTitle || `T${rank.toLocaleString()} ボーダー`, x + pad, y + 54);
+        ctx.restore();
+
+        const badgeW = 136;
+        const badgeH = 40;
+        const badgeX = x + w - pad - badgeW;
+        const badgeY = y + 23;
+
+        ctx.save();
+        drawRoundRect(ctx, badgeX, badgeY, badgeW, badgeH, 10);
+        ctx.fillStyle = "rgba(255, 255, 255, 0.11)";
+        ctx.fill();
+        ctx.lineWidth = 2.2;
+        ctx.strokeStyle = borderGrad;
+        ctx.stroke();
+        ctx.fillStyle = theme.primary;
+        ctx.font = `800 20px ${fontFam}`;
+        ctx.textAlign = "center";
+        ctx.fillText(`T${rank.toLocaleString()}`, badgeX + badgeW / 2, badgeY + 27);
+        ctx.restore();
+
+        if (!pred) {
+          ctx.fillStyle = "rgba(255, 255, 255, 0.65)";
+          ctx.font = `600 17px ${fontFam}`;
+          ctx.fillText("データがまだ取得されていません。", x + pad, y + 120);
+          return;
+        }
+
+        const heroX = x + pad;
+        const heroY = y + 78;
+        const heroW = w - pad * 2;
+        const heroH = 122;
+        ctx.save();
+        drawRoundRect(ctx, heroX, heroY, heroW, heroH, 12);
+        ctx.fillStyle = "rgba(0, 0, 0, 0.36)";
+        ctx.fill();
+        ctx.lineWidth = 1.2;
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.16)";
+        ctx.stroke();
+        ctx.restore();
+
+        ctx.fillStyle = "rgba(255, 255, 255, 0.74)";
+        ctx.font = `700 15px ${fontFam}`;
+        ctx.fillText(pred.isFinished ? "最終確定ボーダー" : "最終着地予測ボーダー（本命）", heroX + 18, heroY + 28);
+
+        ctx.save();
+        ctx.font = `800 44px ${fontFam}`;
+        if (theme.rainbow) {
+          const txtGrad = ctx.createLinearGradient(heroX + 18, 0, heroX + 380, 0);
+          txtGrad.addColorStop(0, "#ff758f");
+          txtGrad.addColorStop(0.35, "#ffd166");
+          txtGrad.addColorStop(0.7, "#06d6a0");
+          txtGrad.addColorStop(1, "#60a5fa");
+          ctx.fillStyle = txtGrad;
+        } else {
+          ctx.fillStyle = theme.forecast;
+        }
+        if (theme.sparkle) {
+          ctx.shadowColor = theme.glowColor;
+          ctx.shadowBlur = 16;
+        }
+        ctx.fillText(`${Engine.formatNumber(pred.centralFinal)} pt`, heroX + 18, heroY + 76);
+        ctx.restore();
+
+        if (!pred.isFinished) {
+          ctx.fillStyle = theme.accent;
+          ctx.font = `700 16px ${fontFam}`;
+          ctx.fillText(
+            `誤差目安: ±${Engine.formatNumber(pred.halfSpread)} pt  (${Engine.formatNumber(pred.minFinal)} 〜 ${Engine.formatNumber(pred.maxFinal)})`,
+            heroX + 18,
+            heroY + 106
+          );
+        } else {
+          ctx.fillStyle = theme.accent;
+          ctx.font = `700 16px ${fontFam}`;
+          ctx.fillText("イベント終了・確定スコア", heroX + 18, heroY + 106);
+        }
+
+        const gridY = heroY + heroH + 14;
+        const colW = (w - pad * 2 - 14) / 2;
+        const cellH = 44;
+        const subCells = [
+          { k: "現在スコア", v: `${Engine.formatNumber(pred.currentScore)} pt`, cx: x + pad, cy: gridY },
+          {
+            k: "経過 / 進捗",
+            v: `${pred.elapsedH.toFixed(1)}h / ${pred.totalH.toFixed(0)}h (${(pred.pCur * 100).toFixed(1)}%)`,
+            cx: x + pad + colW + 14,
+            cy: gridY,
+          },
+          { k: "直近時速", v: `${Engine.formatNumber(pred.recentPace)} pt/h`, cx: x + pad, cy: gridY + cellH + 8 },
+          {
+            k: "残り予測増分",
+            v: pred.isFinished ? "0 pt" : `+${Engine.formatNumber(Math.max(0, pred.centralFinal - pred.currentScore))} pt`,
+            cx: x + pad + colW + 14,
+            cy: gridY + cellH + 8,
+          },
+        ];
+
+        for (const cell of subCells) {
+          ctx.save();
+          drawRoundRect(ctx, cell.cx, cell.cy, colW, cellH, 8);
+          ctx.fillStyle = "rgba(255, 255, 255, 0.06)";
+          ctx.fill();
+          ctx.restore();
+
+          ctx.fillStyle = "rgba(255, 255, 255, 0.64)";
+          ctx.font = `600 14px ${fontFam}`;
+          ctx.fillText(cell.k, cell.cx + 12, cell.cy + 27);
+
+          ctx.fillStyle = "#ffffff";
+          ctx.font = `700 15px ${fontFam}`;
+          ctx.textAlign = "right";
+          ctx.fillText(cell.v, cell.cx + colW - 12, cell.cy + 27);
+          ctx.textAlign = "left";
+        }
+
+        const topSplitY = gridY + cellH * 2 + 20;
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.16)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(x + pad, topSplitY);
+        ctx.lineTo(x + w - pad, topSplitY);
+        ctx.stroke();
+
+        const gBoxX = x + pad;
+        const gBoxY = topSplitY + 10;
+        const gBoxW = w - pad * 2;
+        const gBoxH = y + h - 20 - gBoxY;
+
+        ctx.save();
+        drawRoundRect(ctx, gBoxX, gBoxY, gBoxW, gBoxH, 12);
+        ctx.fillStyle = "rgba(0, 0, 0, 0.36)";
+        ctx.fill();
+        ctx.lineWidth = 1.2;
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
+        ctx.stroke();
+        ctx.restore();
+
+        ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
+        ctx.font = `700 15px ${fontFam}`;
+        ctx.fillText("推移実績 & 着地予測レンジ", gBoxX + 16, gBoxY + 26);
+
+        ctx.fillStyle = "rgba(255, 255, 255, 0.58)";
+        ctx.font = `600 13px ${fontFam}`;
+        ctx.textAlign = "right";
+        ctx.fillText(`基準: ${Engine.formatJST(pred.lastT)}`, gBoxX + gBoxW - 16, gBoxY + 26);
+        ctx.textAlign = "left";
+
+        const gPadL = 68, gPadR = 18, gPadT = 40, gPadB = 32;
+        const plotX = gBoxX + gPadL;
+        const plotY = gBoxY + gPadT;
+        const plotW = gBoxW - gPadL - gPadR;
+        const plotH = gBoxH - gPadT - gPadB;
+
+        let maxY = Math.max(pred.maxFinal, pred.currentScore);
+        for (const m of pred.refModels.slice(0, 3)) maxY = Math.max(maxY, m.hFinal);
+        maxY = Math.ceil((maxY * 1.06) / 100000) * 100000 || 500000;
+
+        const xOf = (p) => plotX + Math.max(0, Math.min(1, p)) * plotW;
+        const yOf = (v) => plotY + plotH - (Math.max(0, v) / maxY) * plotH;
+
+        ctx.font = `600 13px ${fontFam}`;
+        ctx.textAlign = "right";
+        for (let i = 0; i <= 4; i++) {
+          const val = (maxY * i) / 4;
+          const gy = yOf(val);
+          ctx.strokeStyle = "rgba(255, 255, 255, 0.10)";
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(plotX, gy);
+          ctx.lineTo(plotX + plotW, gy);
+          ctx.stroke();
+
+          ctx.fillStyle = "rgba(255, 255, 255, 0.68)";
+          const lbl = val >= 10000 ? `${(val / 10000).toFixed(0)}万` : Engine.formatNumber(val);
+          ctx.fillText(lbl, plotX - 10, gy + 4);
+        }
+
+        ctx.textAlign = "center";
+        const stepH = pred.totalH <= 48 ? 12 : 24;
+        for (let hr = 0; hr <= pred.totalH; hr += stepH) {
+          const gx = xOf(hr / pred.totalH);
+          ctx.strokeStyle = "rgba(255, 255, 255, 0.07)";
+          ctx.beginPath();
+          ctx.moveTo(gx, plotY);
+          ctx.lineTo(gx, plotY + plotH);
+          ctx.stroke();
+
+          ctx.fillStyle = "rgba(255, 255, 255, 0.68)";
+          ctx.fillText(`${hr}h`, gx, plotY + plotH + 20);
+        }
+        ctx.textAlign = "left";
+
+        pred.refModels.slice(0, 2).forEach((m) => {
+          const g = m.graph;
+          const dur = g.endTime - g.startTime;
+          ctx.save();
+          ctx.strokeStyle = "rgba(255, 255, 255, 0.22)";
+          ctx.lineWidth = 1.4;
+          ctx.beginPath();
+          const step = Math.max(1, Math.floor(g.tier.length / 120));
+          for (let i = 0; i < g.tier.length; i += step) {
+            const [t, v] = g.tier[i];
+            const px = xOf((t - g.startTime) / dur);
+            const py = yOf(v);
+            if (i === 0) ctx.moveTo(px, py);
+            else ctx.lineTo(px, py);
+          }
+          ctx.stroke();
+          ctx.restore();
+        });
+
+        if (!pred.isFinished && pred.forecastSeries.length > 1) {
+          ctx.save();
+          ctx.fillStyle = theme.bandFill;
+          ctx.beginPath();
+          pred.forecastSeries.forEach((pt, i) => {
+            const px = xOf(pt.p);
+            const py = yOf(pt.max);
+            if (i === 0) ctx.moveTo(px, py);
+            else ctx.lineTo(px, py);
+          });
+          for (let i = pred.forecastSeries.length - 1; i >= 0; i--) {
+            const pt = pred.forecastSeries[i];
+            ctx.lineTo(xOf(pt.p), yOf(pt.min));
+          }
+          ctx.closePath();
+          ctx.fill();
+
+          ctx.setLineDash([7, 5]);
+          ctx.lineWidth = 3.2;
+          ctx.strokeStyle = theme.forecast;
+          if (theme.sparkle) {
+            ctx.shadowColor = theme.glowColor;
+            ctx.shadowBlur = 10;
+          }
+          ctx.beginPath();
+          pred.forecastSeries.forEach((pt, i) => {
+            const px = xOf(pt.p);
+            const py = yOf(pt.central);
+            if (i === 0) ctx.moveTo(px, py);
+            else ctx.lineTo(px, py);
+          });
+          ctx.stroke();
+          ctx.restore();
+        }
+
+        const tPts = pred.targetGraph.tier;
+        const tDur = pred.targetGraph.endTime - pred.targetGraph.startTime;
+        ctx.save();
+        if (theme.rainbow) {
+          const lineGrad = ctx.createLinearGradient(plotX, 0, plotX + plotW, 0);
+          lineGrad.addColorStop(0, "#ff4d6d");
+          lineGrad.addColorStop(0.3, "#ffb703");
+          lineGrad.addColorStop(0.6, "#06d6a0");
+          lineGrad.addColorStop(1, "#3a86ff");
+          ctx.strokeStyle = lineGrad;
+        } else {
+          ctx.strokeStyle = theme.accent;
+        }
+        ctx.lineWidth = 3.8;
+        if (theme.sparkle) {
+          ctx.shadowColor = theme.glowColor;
+          ctx.shadowBlur = 12;
+        }
+        ctx.beginPath();
+        const step = Math.max(1, Math.floor(tPts.length / 180));
+        for (let i = 0; i < tPts.length; i += step) {
+          const [t, v] = tPts[i];
+          const px = xOf((t - pred.targetGraph.startTime) / tDur);
+          const py = yOf(v);
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        }
+        const [lt, lv] = tPts[tPts.length - 1];
+        const lx = xOf((lt - pred.targetGraph.startTime) / tDur);
+        const ly = yOf(lv);
+        ctx.lineTo(lx, ly);
+        ctx.stroke();
+
+        ctx.fillStyle = "#ffffff";
+        ctx.beginPath();
+        ctx.arc(lx, ly, 5.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+
+        const endY = yOf(pred.centralFinal);
+        ctx.save();
+        ctx.fillStyle = theme.forecast;
+        ctx.beginPath();
+        ctx.arc(xOf(1), endY, 5.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      // -----------------------------------------------------------------------
+      // CanvasをDiscord投稿用Blob（850KB以下）へ変換
+      // -----------------------------------------------------------------------
+      function exportCanvasBlob() {
+        return new Promise((resolve) => {
+          el.tripleCanvas.toBlob((pngBlob) => {
+            if (pngBlob && pngBlob.size <= 850 * 1024) {
+              resolve({ blob: pngBlob, filename: "border_prediction.png" });
+            } else {
+              el.tripleCanvas.toBlob(
+                (jpgBlob) => resolve({ blob: jpgBlob, filename: "border_prediction.jpg" }),
+                "image/jpeg",
+                0.90
+              );
+            }
+          }, "image/png");
+        });
+      }
+
+      // -----------------------------------------------------------------------
+      // サーバー同期・API取得・配信アクション
+      // -----------------------------------------------------------------------
+      async function bootstrapDashboard() {
+        setStatus("サーバーデータを読み込み中...");
+        const [bootRes] = await Promise.all([
+          apiFetch("/api/admin/bootstrap"),
+          state.archiveItems.length === 0 ? loadArchiveFromGithub() : Promise.resolve(),
+        ]);
+        const data = await bootRes.json();
+
+        state.events = data.events || [];
+        state.graphs = data.graphs || {};
+        state.manualAdjustments = data.manualAdjustments || {};
+        state.guildSettings = data.guildSettings || {};
+        state.subscriptionCount = Number(data.subscriptionCount) || 0;
+        state.lastManualUpdateAt = Number(data.lastManualUpdateAt) || 0;
+        state.lastAutoFetchAt = Number(data.lastAutoFetchAt) || 0;
+        state.nowBorderCache = data.nowBorderCache || null;
+        state.predictionCacheMeta = data.predictionCacheMeta || null;
+
+        el.subCountBadge.textContent = `購読: ${state.subscriptionCount} ch`;
+        el.lastAutoFetchLabel.textContent = state.lastAutoFetchAt ? Engine.formatJST(state.lastAutoFetchAt) : "未実行";
+        el.lastManualUpdateLabel.textContent = state.lastManualUpdateAt ? Engine.formatJST(state.lastManualUpdateAt) : "未実行";
+        el.cacheTimeLabel.textContent = state.nowBorderCache?.timeLabel || state.predictionCacheMeta?.timeLabel || "未生成";
+
+        buildTargetList();
+        recalculateAndRender();
+        setStatus("最新データと同期しました。", "var(--success)");
+      }
+
+      async function handleFetchNewApi() {
+        el.fetchApiBtn.disabled = true;
+        setStatus("holodori-border.com APIから最新ボーダーを取得中...");
+        try {
+          const res = await apiFetch("/api/admin/fetch-api", { method: "POST" });
+          const data = await res.json();
+          if (!data.ok) throw new Error(data.error || "API取得失敗");
+
+          state.events = data.events || state.events;
+          state.graphs = data.graphs || state.graphs;
+          state.nowBorderCache = data.nowBorderCache || state.nowBorderCache;
+          state.lastAutoFetchAt = Date.now();
+          state.textManuallyEdited = false;
+
+          el.lastAutoFetchLabel.textContent = Engine.formatJST(state.lastAutoFetchAt);
+          if (state.nowBorderCache?.timeLabel) {
+            el.cacheTimeLabel.textContent = state.nowBorderCache.timeLabel;
+          }
+
+          if (data.result?.targetKey) {
+            state.selectedKey = data.result.targetKey;
+          }
+          buildTargetList();
+          recalculateAndRender();
+
+          if (data.result?.fetched) {
+            setStatus(`API取得完了: ${data.result.shortLabel} (${data.result.timeLabel})`, "var(--success)");
+            showToast("✅ APIから最新ボーダーを取得しました");
+          } else {
+            setStatus("現在開催中の対象イベント/チャプターはありません。", "var(--warning)");
+            showToast("⚠️ 開催中の対象イベントが見つかりませんでした");
+          }
+        } catch (err) {
+          setStatus(`エラー: ${err.message}`, "var(--danger)");
+          showToast(`❌ ${err.message}`);
+        } finally {
+          el.fetchApiBtn.disabled = false;
+        }
+      }
+
+      async function submitCacheOrBroadcast(shouldNotify) {
+        if (shouldNotify) {
+          const ok = confirm(
+            `登録済みの全チャンネル（${state.subscriptionCount}ch）にボーダー予測を一斉送信します。よろしいですか？`
+          );
+          if (!ok) return;
+        }
+
+        el.updateCacheOnlyBtn.disabled = true;
+        el.broadcastBtn.disabled = true;
+        setStatus(shouldNotify ? "画像を生成してDiscordへ一斉配信中..." : "キャッシュを更新中...");
+
+        try {
+          const { blob, filename } = await exportCanvasBlob();
+          const form = new FormData();
+          form.append("image", blob, filename);
+          form.append("nowBorderText", el.nowBorderTextarea.value.trim());
+          form.append("customText", el.customTextInput.value.trim());
+          form.append("customTextPosition", el.customPosSelect.value);
+          form.append("notify", shouldNotify ? "true" : "false");
+          form.append("respectMuteTime", el.respectMuteCheck.checked ? "true" : "false");
+          form.append("eventKey", state.selectedKey);
+          form.append("manualAdjustments", JSON.stringify(state.manualAdjustments[state.selectedKey] || {}));
+
+          const endpoint = shouldNotify ? "/api/admin/broadcast" : "/api/admin/update-cache";
+          const res = await apiFetch(endpoint, { method: "POST", body: form });
+          const data = await res.json();
+          if (!data.ok) throw new Error(data.error || "送信エラー");
+
+          state.lastManualUpdateAt = Date.now();
+          el.lastManualUpdateLabel.textContent = Engine.formatJST(state.lastManualUpdateAt);
+          const m = /最終更新\(([^)]+)\)/.exec(el.nowBorderTextarea.value);
+          if (m) el.cacheTimeLabel.textContent = m[1];
+
+          setStatus(data.message, "var(--success)");
+          showToast(data.message);
+        } catch (err) {
+          setStatus(`エラー: ${err.message}`, "var(--danger)");
+          showToast(`❌ ${err.message}`);
+        } finally {
+          el.updateCacheOnlyBtn.disabled = false;
+          el.broadcastBtn.disabled = false;
+        }
+      }
+
+      // -----------------------------------------------------------------------
+      // イベントリスナー登録
+      // -----------------------------------------------------------------------
+      async function attemptLogin(pw) {
         const res = await fetch("/api/admin/login", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ password: pw }),
         });
-
-        if (res.ok) {
-          adminPassword = pw;
-          sessionStorage.setItem("admin_pw", pw);
-          document.getElementById("loginOverlay").style.display = "none";
-          await initializeApp();
-        } else if (res.status === 401) {
-          errEl.textContent = "パスワードが違います。";
-        } else {
-          errEl.textContent = `サーバーエラーが発生しました (HTTP ${res.status})`;
+        if (!res.ok) {
+          showToast("❌ パスワードが正しくありません");
+          return;
         }
-      } catch (err) {
-        errEl.textContent = `通信または初期化エラー: ${err.message}`;
-        console.error("Login error:", err);
-      } finally {
-        if (btn) {
-          btn.disabled = false;
-          btn.textContent = "ログイン";
-        }
+        state.password = pw;
+        sessionStorage.setItem("holodori_admin_pw", pw);
+        el.loginScreen.style.display = "none";
+        el.appScreen.style.display = "block";
+        await bootstrapDashboard();
       }
-    }
-    window.doLogin = doLogin;
 
-    async function initializeApp() {
-      await Promise.all([loadArchiveFromGithub(false), loadServerBootstrap()]);
-      rebuildCombinedItems();
-      renderAllUI();
-    }
+      el.loginBtn.addEventListener("click", () => attemptLogin(el.passwordInput.value));
+      el.passwordInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") attemptLogin(el.passwordInput.value);
+      });
 
-    async function loadServerBootstrap() {
-      const res = await apiFetch("/api/admin/bootstrap");
-      const data = await res.json();
-      if (Array.isArray(data.events)) {
-        state.events = data.events;
-      }
-      if (data.graphs && typeof data.graphs === "object") {
-        for (const [k, g] of Object.entries(data.graphs)) {
-          if (g && Array.isArray(g.tier)) {
-            state.graphCache.set(k, g);
-          }
-        }
-      }
-      if (data.manualAdjustments && typeof data.manualAdjustments === "object") {
-        state.manualAdjustments = data.manualAdjustments;
-      }
-      document.getElementById("statEvents").textContent = `イベント一覧キャッシュ: ${state.events.length}件`;
-      document.getElementById("statSubs").textContent = `通知購読チャンネル: ${data.subscriptionCount}ch`;
-    }
+      el.logoutBtn.addEventListener("click", () => {
+        sessionStorage.removeItem("holodori_admin_pw");
+        location.reload();
+      });
 
-    async function fetchFromServerApi() {
-      const btn = document.getElementById("fetchApiBtn");
-      if (btn) {
-        btn.disabled = true;
-        btn.textContent = "API取得中...";
-      }
-      try {
-        const res = await apiFetch("/api/admin/fetch-api", { method: "POST" });
-        const rawText = await res.text();
-        let data;
+      el.fetchApiBtn.addEventListener("click", handleFetchNewApi);
+      el.reloadAllBtn.addEventListener("click", bootstrapDashboard);
+
+      el.eventSelect.addEventListener("change", (e) => {
+        state.selectedKey = e.target.value;
+        state.textManuallyEdited = false;
+        recalculateAndRender();
+      });
+
+      el.nowBorderTextarea.addEventListener("input", () => {
+        state.textManuallyEdited = true;
+      });
+
+      el.saveAdjBtn.addEventListener("click", () => submitCacheOrBroadcast(false));
+
+      el.resetAdjBtn.addEventListener("click", () => {
+        if (!state.selectedKey) return;
+        state.manualAdjustments[state.selectedKey] = { "1000": 0, "5000": 0, "10000": 0 };
+        recalculateAndRender();
+        showToast("補正値を 0 にリセットしました");
+      });
+
+      el.copyTextBtn.addEventListener("click", async () => {
         try {
-          data = JSON.parse(rawText);
+          await navigator.clipboard.writeText(el.nowBorderTextarea.value);
+          showToast("📋 テキストをクリップボードにコピーしました");
         } catch (_) {
-          throw new Error(`サーバーから予期しない応答が返りました (HTTP ${res.status})`);
+          el.nowBorderTextarea.select();
+          document.execCommand("copy");
+          showToast("📋 コピーしました");
         }
-
-        if (!res.ok || !data.ok) {
-          throw new Error(data.error || `API取得に失敗しました (HTTP ${res.status})`);
-        }
-
-        await loadServerBootstrap();
-        rebuildCombinedItems();
-
-        const targetKey = data.result && data.result.targetKey;
-        if (targetKey && state.eligibleItems.some((it) => it.key === targetKey)) {
-          state.selectedKey = targetKey;
-          state.single.key = targetKey;
-          state.dual.forEach((s) => (s.key = targetKey));
-          state.triple.forEach((s) => (s.key = targetKey));
-        }
-
-        renderAllUI();
-
-        if (data.result && data.result.fetched === false) {
-          showToast("現在開催中の対象イベントがないためスキップしました");
-        } else {
-          showToast("APIから最新データを取得し、予測・現在ボーダーを更新しました");
-        }
-      } catch (err) {
-        showToast("API取得エラー: " + err.message);
-        console.error("fetchFromServerApi error:", err);
-      } finally {
-        if (btn) {
-          btn.disabled = false;
-          btn.textContent = "🌐 APIから最新データを取得";
-        }
-      }
-    }
-    window.fetchFromServerApi = fetchFromServerApi;
-
-    // =========================================================================
-    // 2. GitHub 過去完了データの直接読込
-    // =========================================================================
-    async function loadArchiveFromGithub(notify = false) {
-      const statEl = document.getElementById("statArchive");
-      statEl.textContent = "GitHub過去データ: 読込中...";
-      try {
-        const res = await fetch(`${GITHUB_ARCHIVE_BASE}/index.json?t=${Math.floor(Date.now() / 60000)}`, {
-          cache: "no-store",
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const manifest = await res.json();
-        const entries = Array.isArray(manifest) ? manifest : Array.isArray(manifest.items) ? manifest.items : [];
-
-        const newArchiveItems = [];
-        let loadedFiles = 0;
-
-        for (const ent of entries) {
-          const tierEntries = [];
-          for (const [k, val] of Object.entries(ent)) {
-            const m = /^t(\d+)$/i.exec(k);
-            if (m && typeof val === "string" && val.trim() !== "") {
-              tierEntries.push({ rankHint: Number(m[1]), file: val.trim() });
-            }
-          }
-          if (tierEntries.length === 0 && typeof ent.file === "string") {
-            tierEntries.push({ rankHint: ent.rank || 5000, file: ent.file.trim() });
-          }
-
-          const displayName = ent.tag || ent.name || ent.chapterId || ent.eventId || "archive";
-          const key = ent.eventId && ent.chapterId ? `${ent.eventId}::${ent.chapterId}` : `archive::${displayName}`;
-
-          const fetched = await Promise.all(
-            tierEntries.map(async (te) => {
-              try {
-                const gRes = await fetch(`${GITHUB_ARCHIVE_BASE}/${te.file}`);
-                if (!gRes.ok) return null;
-                const graph = await gRes.json();
-                if (!graph || !Array.isArray(graph.tier) || graph.tier.length === 0) return null;
-                return { actualRank: Number(graph.rank) || te.rankHint, graph };
-              } catch (_) {
-                return null;
-              }
-            })
-          );
-
-          let repGraph = null;
-          for (const item of fetched) {
-            if (!item) continue;
-            state.graphCache.set(`${key}::${item.actualRank}`, item.graph);
-            loadedFiles++;
-            if (!repGraph) repGraph = item.graph;
-          }
-
-          if (repGraph) {
-            const durH = (repGraph.endTime - repGraph.startTime) / 3600000;
-            const isFinished =
-              repGraph.tier[repGraph.tier.length - 1][0] >= repGraph.endTime - 15 * 60 * 1000;
-            const cat = ent.category || "spotlight";
-            const catLabel = cat === "point" ? "ポイントイベント" : "スポットライト";
-
-            newArchiveItems.push({
-              key,
-              eventId: ent.eventId || "archive",
-              chapterId: ent.chapterId || displayName,
-              category: cat,
-              catLabel,
-              label: `[過去] ${displayName} (${formatJST(repGraph.startTime, true)}〜, ${Math.round(durH)}h)`,
-              shortLabel: displayName,
-              startTime: repGraph.startTime,
-              endTime: repGraph.endTime,
-              durationH: durH,
-              live: !isFinished,
-              isArchive: true,
-            });
-          }
-        }
-
-        state.archiveItems = newArchiveItems;
-        statEl.textContent = `GitHub過去データ: ${newArchiveItems.length}イベント (${loadedFiles}件)`;
-        if (notify) {
-          rebuildCombinedItems();
-          renderAllUI();
-          showToast(`GitHubから過去データを再読込しました（${newArchiveItems.length}イベント）`);
-        }
-      } catch (err) {
-        statEl.textContent = "GitHub過去データ: 読込失敗";
-        console.error(err);
-      }
-    }
-
-    function rebuildCombinedItems() {
-      const now = Date.now();
-      const map = new Map();
-
-      for (const aItem of state.archiveItems) {
-        map.set(aItem.key, aItem);
-      }
-
-      for (const ev of state.events) {
-        const cat = getEventCategory(ev);
-        if (!cat) continue;
-        const chapters =
-          Array.isArray(ev.chapters) && ev.chapters.length > 0
-            ? ev.chapters
-            : Object.keys(ev.chapterMeta || {});
-
-        for (const cid of chapters) {
-          const cm = (ev.chapterMeta && ev.chapterMeta[cid]) || {};
-          const st = cm.startTime || ev.startTime;
-          const et = cm.endTime || ev.endTime;
-          if (!st || !et) continue;
-
-          const isChapterLive = Boolean(ev.live && (ev.activeChapterId === cid || (now >= st && now <= et)));
-          const isStarted = st <= now || !ev.live;
-          if (!isStarted && !isChapterLive) continue;
-
-          const key = `${ev.eventId}::${cid}`;
-          const existingArch = map.get(key);
-          const evDisplayName = ev.name || (existingArch ? existingArch.eventName : ev.eventId);
-          const chDisplayName = cm.name || null;
-          const chName = chDisplayName ? ` / ${chDisplayName}` : existingArch ? ` / ${existingArch.shortLabel}` : "";
-          const shortName = cm.shortName || chDisplayName || (existingArch ? existingArch.shortLabel : evDisplayName);
-          const catLabel = cat === "spotlight" ? "スポットライト" : "ポイントイベント";
-          const durH = (et - st) / 3600000;
-
-          map.set(key, {
-            key,
-            eventId: ev.eventId,
-            chapterId: cid,
-            category: cat,
-            catLabel,
-            eventName: evDisplayName,
-            chapterName: chDisplayName,
-            label: `${catLabel}：${evDisplayName}${chName} (${formatJST(st, true)}〜, ${Math.round(durH)}h)${isChapterLive ? " [開催中]" : ""}`,
-            shortLabel: shortName,
-            startTime: st,
-            endTime: et,
-            durationH: durH,
-            live: isChapterLive,
-            isArchive: Boolean(existingArch),
-          });
-        }
-      }
-
-      const items = Array.from(map.values());
-      items.sort((a, b) => b.startTime - a.startTime);
-      state.eligibleItems = items;
-
-      if (!state.selectedKey || !items.some((x) => x.key === state.selectedKey)) {
-        const liveWithGraph = items.find(
-          (x) => x.live && Array.from(state.graphCache.keys()).some((k) => k.startsWith(`${x.key}::`))
-        );
-        const liveAny = items.find((x) => x.live);
-        state.selectedKey = (liveWithGraph || liveAny || items[0])?.key || null;
-      }
-
-      syncSlotsToSelectedIfUnset();
-    }
-
-    function syncSlotsToSelectedIfUnset() {
-      const def = state.selectedKey;
-      if (!def) return;
-      if (!state.single.key) state.single.key = def;
-      state.dual.forEach((s) => { if (!s.key) s.key = def; });
-      state.triple.forEach((s) => { if (!s.key) s.key = def; });
-    }
-
-    // =========================================================================
-    // 3. API開き ＆ クリップボード自動取込
-    // =========================================================================
-    function openListApi() {
-      pendingHint = { key: null, rank: null };
-      window.open(`${API_BASE}/list?region=jp&language=jpn`, "_blank");
-    }
-
-    function openGraphApi(rankVal) {
-      const evKey = document.getElementById("targetEventSelect").value;
-      const item = state.eligibleItems.find((x) => x.key === evKey);
-      const eid = item ? item.eventId : "marathon_event-relay-004";
-      const cid = item ? item.chapterId : "marathon_event-relay-004-chapter-03";
-      pendingHint = { key: evKey, rank: rankVal };
-      window.open(
-        `${API_BASE}/graph?region=jp&rank=${rankVal}&border=true&music=false&event_id=${encodeURIComponent(eid)}&chapter_id=${encodeURIComponent(cid)}`,
-        "_blank"
-      );
-    }
-
-    function detectRank(parsed) {
-      if (parsed && Number(parsed.rank) > 0) return Number(parsed.rank);
-      if (pendingHint && pendingHint.rank) return Number(pendingHint.rank);
-      return 5000;
-    }
-
-    async function ingestParsedJson(parsed) {
-      if (!parsed || typeof parsed !== "object") return false;
-
-      if (Array.isArray(parsed.events)) {
-        state.events = parsed.events;
-        rebuildCombinedItems();
-        renderAllUI();
-        document.getElementById("statEvents").textContent = `イベント一覧キャッシュ: ${parsed.events.length}件`;
-        showToast(`イベント一覧を取り込みキャッシュしました（${parsed.events.length}件）`);
-        apiFetch("/api/admin/cache-events", { method: "POST", body: { events: parsed.events } }).catch(() => {});
-        return true;
-      }
-
-      if (Array.isArray(parsed.tier) && parsed.startTime && parsed.endTime) {
-        const gRank = detectRank(parsed);
-        let matched = state.eligibleItems.find(
-          (it) => Math.abs(it.startTime - parsed.startTime) < 120000 && Math.abs(it.endTime - parsed.endTime) < 120000
-        );
-        if (!matched && pendingHint.key) {
-          matched = state.eligibleItems.find((it) => it.key === pendingHint.key);
-        }
-        if (!matched) {
-          const tempKey = `imported::${parsed.startTime}_${parsed.endTime}`;
-          matched = {
-            key: tempKey,
-            eventId: "imported",
-            chapterId: `${parsed.startTime}`,
-            category: "spotlight",
-            catLabel: "取込イベント",
-            label: `取込データ (${formatJST(parsed.startTime, true)}〜)`,
-            shortLabel: `イベント(${formatJST(parsed.startTime, true)})`,
-            startTime: parsed.startTime,
-            endTime: parsed.endTime,
-            durationH: (parsed.endTime - parsed.startTime) / 3600000,
-            live: parsed.tier[parsed.tier.length - 1][0] < parsed.endTime - 60000,
-          };
-          state.eligibleItems.unshift(matched);
-        }
-
-        const cacheKey = `${matched.key}::${gRank}`;
-        const graphObj = { ...parsed, rank: gRank };
-        state.graphCache.set(cacheKey, graphObj);
-        state.selectedKey = matched.key;
-        state.single.key = matched.key;
-        state.dual.forEach((s) => (s.key = matched.key));
-        state.triple.forEach((s) => (s.key = matched.key));
-
-        renderAllUI();
-        const latestVal = parsed.tier[parsed.tier.length - 1][1];
-        showToast(`「${matched.shortLabel}」(T${gRank.toLocaleString()}) を取り込みました（最新: ${formatNumber(latestVal)} pt）`);
-        apiFetch("/api/admin/cache-graph", { method: "POST", body: { cacheKey, graph: graphObj } }).catch(() => {});
-        return true;
-      }
-
-      return false;
-    }
-
-    async function readClipboardNow(silent = false) {
-      if (!navigator.clipboard || !navigator.clipboard.readText) return;
-      try {
-        const raw = (await navigator.clipboard.readText()).trim();
-        if (!raw || !raw.startsWith("{")) return;
-        if (silent && raw === lastClipboardText) return;
-        const parsed = JSON.parse(raw);
-        if (await ingestParsedJson(parsed)) {
-          lastClipboardText = raw;
-        }
-      } catch (_) {}
-    }
-
-    window.addEventListener("focus", () => {
-      if (adminPassword) readClipboardNow(true);
-    });
-
-    async function submitManualJson() {
-      const raw = document.getElementById("manualJsonArea").value.trim();
-      if (!raw) return;
-      try {
-        const parsed = JSON.parse(raw);
-        if (await ingestParsedJson(parsed)) {
-          lastClipboardText = raw;
-          document.getElementById("manualJsonArea").value = "";
-        } else {
-          alert("有効な events または tier データが含まれていません。");
-        }
-      } catch (e) {
-        alert("JSON構文エラー: " + e.message);
-      }
-    }
-
-    // =========================================================================
-    // 4. NowBorder テキスト自動生成（5分丸め ＋ 万単位四捨五入）
-    // =========================================================================
-    function formatRoundedJstTime(ms) {
-      const jst = new Date(ms + 9 * 3600 * 1000);
-      const hh = jst.getUTCHours();
-      const mm = jst.getUTCMinutes();
-      const totalMinutes = hh * 60 + mm;
-      const roundedTotalMinutes = Math.round(totalMinutes / 5) * 5;
-      const finalHour = Math.floor(roundedTotalMinutes / 60) % 24;
-      const finalMin = roundedTotalMinutes % 60;
-      return finalMin === 0 ? `${finalHour}時` : `${finalHour}時${finalMin}分`;
-    }
-
-    function formatManRounded(score) {
-      if (score == null || Number.isNaN(score)) return "未取得";
-      return `${Math.round(score / 10000)}万`;
-    }
-
-    function getLatestDataTimeLabel() {
-      const targetKey = state.selectedKey;
-      let latestTimestamp = 0;
-      for (const tier of TIER_DEFS) {
-        const graph = targetKey ? state.graphCache.get(`${targetKey}::${tier.rank}`) : null;
-        if (graph && Array.isArray(graph.tier) && graph.tier.length > 0) {
-          const [lastT] = graph.tier[graph.tier.length - 1];
-          if (lastT > latestTimestamp) latestTimestamp = lastT;
-        }
-      }
-      const baseTime = latestTimestamp > 0 ? latestTimestamp : Date.now();
-      return formatRoundedJstTime(baseTime);
-    }
-
-    function buildNowBorderText() {
-      const targetKey = state.selectedKey;
-      let latestTimestamp = 0;
-      const lines = [];
-
-      for (const tier of TIER_DEFS) {
-        const graph = targetKey ? state.graphCache.get(`${targetKey}::${tier.rank}`) : null;
-        if (graph && Array.isArray(graph.tier) && graph.tier.length > 0) {
-          const [lastT, lastVal] = graph.tier[graph.tier.length - 1];
-          if (lastT > latestTimestamp) latestTimestamp = lastT;
-          lines.push(`${tier.label} ${formatManRounded(lastVal)}`);
-        } else {
-          lines.push(`${tier.label} 未取得`);
-        }
-      }
-
-      const baseTime = latestTimestamp > 0 ? latestTimestamp : Date.now();
-      return [`最終更新(${formatRoundedJstTime(baseTime)})時点のボーダーです！`, ...lines].join("\n");
-    }
-
-    function updateTextPreviews() {
-      const nowBorderText = buildNowBorderText();
-      const customText = document.getElementById("customTextInput").value.trim();
-      const pos = document.getElementById("customTextPosSelect").value;
-
-      let preview = "";
-      if (customText && pos === "above") {
-        preview = `【1通目（テキスト＋画像）】\n${customText}\n\n${nowBorderText}\n\n[添付: BorderPrediction画像]`;
-      } else if (customText && pos === "below") {
-        preview = `【1通目（本体）】\n${nowBorderText}\n[添付: BorderPrediction画像]\n\n--------------------\n【2通目（画像の下に連続送信）】\n${customText}`;
-      } else {
-        preview = `【1通目】\n${nowBorderText}\n\n[添付: BorderPrediction画像]`;
-      }
-      document.getElementById("messageFlowPreview").textContent = preview;
-      updateDiagPreview();
-    }
-
-    function updateDiagPreview() {
-      const diagEl = document.getElementById("diagTagsPreview");
-      const targetKey = state.selectedKey;
-      if (!targetKey) {
-        diagEl.textContent = "予測診断ログ: イベント未選択";
-        return;
-      }
-      const lines = [];
-      for (const tier of TIER_DEFS) {
-        const pred = getPredictionFor(targetKey, tier.rank);
-        if (pred && pred.metaInfo) {
-          const m = pred.metaInfo;
-          const adjTxt = pred.manualAdjustPt
-            ? ` / 手動補正: ${pred.manualAdjustPt > 0 ? "+" : ""}${Math.round(pred.manualAdjustPt / 10000)}万pt`
-            : "";
-          const tenMinTxt = m.w10mPct > 0
-            ? ` / 10分EMA:${Math.round(m.pace10m / 10000).toLocaleString()}万pt/h(比重${m.w10mPct}%)`
-            : "";
-          const spurtTxt = m.spurtBoost > 1.001
-            ? ` / 条件スパート:+${((m.spurtBoost - 1) * 100).toFixed(1)}%`
-            : "";
-          const simTxt = m.topMatchName && m.topMatchName !== "-"
-            ? ` / 最類似:${m.topMatchName}(一致度${Math.round((m.topShapeSim || 0) * 100)}%)`
-            : "";
-          lines.push(
-            `・${tier.label}(T${tier.rank.toLocaleString()}): ${m.zoneLabel} / 時速重み${m.wPacePct}% / 勢い係数${m.liveHeat.toFixed(2)}x${tenMinTxt}${spurtTxt}${simTxt}${adjTxt}`
-          );
-        } else {
-          lines.push(`・${tier.label}(T${tier.rank.toLocaleString()}): データ未取得`);
-        }
-      }
-      diagEl.innerHTML = `<strong>▼ v6 状況適応型・動的ベースライン診断ログ（管理画面確認用）</strong><br>${lines.join("<br>")}`;
-    }
-
-    // =========================================================================
-    // 5. 着地予測モデル（v6 状況適応型・動的ベースライン版 / index.js と完全同一）
-    // =========================================================================
-    function calcMedian(values) {
-      if (!values || values.length === 0) return 1.0;
-      const sorted = [...values].sort((a, b) => a - b);
-      const mid = sorted.length >> 1;
-      return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) * 0.5;
-    }
-
-    function interpScoreAtTime(graph, targetT) {
-      const st = graph.startTime;
-      const pts = graph.tier;
-      if (!pts || pts.length === 0) return null;
-      if (targetT <= st) return 0;
-      if (targetT <= pts[0][0]) {
-        return pts[0][1] * Math.max(0, (targetT - st) / Math.max(1, pts[0][0] - st));
-      }
-      if (targetT >= pts[pts.length - 1][0]) {
-        return pts[pts.length - 1][1];
-      }
-      let lo = 0, hi = pts.length - 1;
-      while (lo + 1 < hi) {
-        const mid = (lo + hi) >> 1;
-        if (pts[mid][0] <= targetT) lo = mid;
-        else hi = mid;
-      }
-      const [t0, v0] = pts[lo];
-      const [t1, v1] = pts[hi];
-      return v0 + (v1 - v0) * ((targetT - t0) / Math.max(1, t1 - t0));
-    }
-
-    function interpScoreAtProgress(graph, prog) {
-      const targetT = graph.startTime + prog * (graph.endTime - graph.startTime);
-      return interpScoreAtTime(graph, targetT);
-    }
-
-    function getJstParts(ms) {
-      const jst = new Date(ms + 9 * 3600 * 1000);
-      const year = jst.getUTCFullYear();
-      const month = jst.getUTCMonth() + 1;
-      const day = jst.getUTCDate();
-      const dow = jst.getUTCDay();
-      const hour = jst.getUTCHours();
-      const minute = jst.getUTCMinutes();
-      const slot30 = hour * 2 + (minute >= 30 ? 1 : 0);
-      return { year, month, day, dow, hour, minute, slot30 };
-    }
-
-    function getJstHour(ms) {
-      return getJstParts(ms).hour;
-    }
-
-    function getJstDayOfWeek(ms) {
-      return getJstParts(ms).dow;
-    }
-
-    // 日本の祝日判定（JST基準・固定祝日/ハッピーマンデー/春分秋分/振替休日/国民の休日）
-    const _jpHolidayCache = new Map();
-    function isSingleDayHolidayJST(y, m, d, dow) {
-      const nthMonday = (targetM, n) => {
-        const firstDow = new Date(Date.UTC(y, targetM - 1, 1)).getUTCDay();
-        const firstMon = 1 + ((8 - firstDow) % 7);
-        return firstMon + (n - 1) * 7;
-      };
-      if (m === 1 && d === 1) return true; // 元日
-      if (m === 1 && d === nthMonday(1, 2)) return true; // 成人の日
-      if (m === 2 && d === 11) return true; // 建国記念の日
-      if (m === 2 && d === 23) return true; // 天皇誕生日
-      if (m === 3) {
-        const vernal = Math.floor(20.8431 + 0.242194 * (y - 1980) - Math.floor((y - 1980) / 4));
-        if (d === vernal) return true; // 春分の日
-      }
-      if (m === 4 && d === 29) return true; // 昭和の日
-      if (m === 5 && (d === 3 || d === 4 || d === 5)) return true; // 憲法記念日・みどりの日・こどもの日
-      if (m === 7 && d === nthMonday(7, 3)) return true; // 海の日
-      if (m === 8 && d === 11) return true; // 山の日
-      if (m === 9 && d === nthMonday(9, 3)) return true; // 敬老の日
-      if (m === 9) {
-        const autumnal = Math.floor(23.2488 + 0.242194 * (y - 1980) - Math.floor((y - 1980) / 4));
-        if (d === autumnal) return true; // 秋分の日
-      }
-      if (m === 10 && d === nthMonday(10, 2)) return true; // スポーツの日
-      if (m === 11 && (d === 3 || d === 23)) return true; // 文化の日・勤労感謝の日
-      return false;
-    }
-
-    function isJapaneseHolidayJST(ms) {
-      const { year, month, day, dow } = getJstParts(ms);
-      const key = `${year}-${month}-${day}`;
-      if (_jpHolidayCache.has(key)) return _jpHolidayCache.get(key);
-
-      const checkDirect = (tMs) => {
-        const p = getJstParts(tMs);
-        return isSingleDayHolidayJST(p.year, p.month, p.day, p.dow);
-      };
-
-      let isHol = checkDirect(ms);
-      // 振替休日（日曜が祝日の場合、その後の最初の平日）
-      if (!isHol && dow !== 0) {
-        for (let back = 1; back <= 3; back++) {
-          const prevMs = ms - back * 86400000;
-          const pp = getJstParts(prevMs);
-          if (!checkDirect(prevMs)) break;
-          if (pp.dow === 0) {
-            isHol = true;
-            break;
-          }
-        }
-      }
-      // 国民の休日（前日と翌日が祝日）
-      if (!isHol && checkDirect(ms - 86400000) && checkDirect(ms + 86400000)) {
-        isHol = true;
-      }
-
-      _jpHolidayCache.set(key, isHol);
-      return isHol;
-    }
-
-    // 30分スロット（48枠）のデフォルト基礎活性係数（平日 / 休日・祝日）
-    function getDefaultSlot30Factor(slot30, isWeekendOrHoliday) {
-      const h = Math.floor(slot30 / 2);
-      const isHalf = slot30 % 2 === 1;
-      const weekday24 = [
-        0.58, 0.36, 0.22, 0.16, 0.15, 0.20,
-        0.34, 0.52, 0.62, 0.62, 0.66, 0.72,
-        0.84, 0.78, 0.78, 0.84, 0.92, 1.05,
-        1.18, 1.30, 1.44, 1.48, 1.32, 0.94,
-      ];
-      const holiday24 = [
-        0.66, 0.44, 0.28, 0.20, 0.18, 0.22,
-        0.34, 0.48, 0.64, 0.78, 0.90, 0.98,
-        1.05, 1.08, 1.12, 1.16, 1.22, 1.28,
-        1.34, 1.42, 1.50, 1.52, 1.36, 0.98,
-      ];
-      const tbl = isWeekendOrHoliday ? holiday24 : weekday24;
-      const cur = tbl[h] || 1.0;
-      const next = tbl[(h + 1) % 24] || cur;
-      return isHalf ? (cur + next) * 0.5 : cur;
-    }
-
-    // 過去データ（36ファイル群）から「曜日 × 祝日 × 30分スロット」の速度係数を自動学習
-    function buildCalendarProfileFromRefs(refGraphs) {
-      const buckets = new Map(); // `${effDow}_${slot30}` -> number[]
-      const stepMs = 30 * 60 * 1000;
-
-      for (const g of refGraphs) {
-        if (!g || !Array.isArray(g.tier) || g.tier.length < 10) continue;
-        const durH = (g.endTime - g.startTime) / 3600000;
-        const finalScore = g.tier[g.tier.length - 1][1];
-        const avgPace = finalScore / Math.max(1, durH);
-        if (avgPace <= 0) continue;
-
-        // 開始直後1hと終了直前3hの特殊スパートを除いた定常区間から時間帯係数を抽出
-        const scanStart = g.startTime + 60 * 60 * 1000;
-        const scanEnd = g.endTime - 3 * 60 * 60 * 1000;
-        for (let t = scanStart; t + stepMs <= scanEnd; t += stepMs) {
-          const s0 = interpScoreAtTime(g, t);
-          const s1 = interpScoreAtTime(g, t + stepMs);
-          if (s0 == null || s1 == null) continue;
-          const slotPace = (s1 - s0) / 0.5;
-          const ratio = Math.max(0.10, Math.min(3.50, slotPace / avgPace));
-
-          const midMs = t + stepMs * 0.5;
-          const { dow, slot30 } = getJstParts(midMs);
-          const isHol = isJapaneseHolidayJST(midMs);
-          const effDow = isHol ? 0 : dow; // 祝日は日曜相当（休日）プロファイルに統合
-          const bKey = `${effDow}_${slot30}`;
-          if (!buckets.has(bKey)) buckets.set(bKey, []);
-          buckets.get(bKey).push(ratio);
-        }
-      }
-
-      return function getCalendarSlotFactor(ms) {
-        const { dow, slot30 } = getJstParts(ms);
-        const isHol = isJapaneseHolidayJST(ms);
-        const isWeekendOrHoliday = isHol || dow === 0 || dow === 6;
-        const defaultVal = getDefaultSlot30Factor(slot30, isWeekendOrHoliday);
-
-        const effDow = isHol ? 0 : dow;
-        const samples = buckets.get(`${effDow}_${slot30}`) || [];
-        if (samples.length === 0) return defaultVal;
-
-        const learnedMed = calcMedian(samples);
-        // サンプル数に応じてデフォルトと平滑ブレンド（6件以上で75%実測反映）
-        const trust = Math.min(0.75, samples.length / 8);
-        return defaultVal * (1 - trust) + learnedMed * trust;
-      };
-    }
-
-    // EMA（指数移動平均）で30分速・10分速を取得
-    function computeEmaPace(graph, lastT, slotMin, numSlots = 4, alpha = 0.52) {
-      const st = graph.startTime;
-      const slotMs = slotMin * 60 * 1000;
-      const elapsedMs = lastT - st;
-      if (elapsedMs <= 60000) return 0;
-
-      const actualSlots = Math.max(1, Math.min(numSlots, Math.floor(elapsedMs / slotMs)));
-      const paces = [];
-      for (let i = actualSlots; i >= 1; i--) {
-        const t1 = lastT - (i - 1) * slotMs;
-        const t0 = Math.max(st, lastT - i * slotMs);
-        const dtH = (t1 - t0) / 3600000;
-        if (dtH <= 0) continue;
-        const v1 = interpScoreAtTime(graph, t1);
-        const v0 = interpScoreAtTime(graph, t0);
-        paces.push(Math.max(0, (v1 - v0) / dtH));
-      }
-      if (paces.length === 0) return 0;
-      let ema = paces[0];
-      for (let i = 1; i < paces.length; i++) {
-        ema = alpha * paces[i] + (1 - alpha) * ema;
-      }
-      return ema;
-    }
-
-    // 開始から現在までの「伸び方（カーブ形状）」の類似度を算出（0.15 〜 1.0）
-    function calcTrajectoryShapeSimilarity(targetGraph, refGraph, pCur) {
-      const tSt = targetGraph.startTime;
-      const tDur = targetGraph.endTime - tSt;
-      const rSt = refGraph.startTime;
-      const rDur = refGraph.endTime - rSt;
-
-      const tCurVal = interpScoreAtProgress(targetGraph, pCur);
-      const rCurVal = interpScoreAtProgress(refGraph, pCur);
-      if (!tCurVal || tCurVal <= 0 || !rCurVal || rCurVal <= 0) return 0.5;
-
-      const bins = Math.max(4, Math.min(24, Math.round(pCur * 48)));
-      const vecT = [];
-      const vecR = [];
-      let prevT = 0;
-      let prevR = 0;
-
-      for (let i = 1; i <= bins; i++) {
-        const p = (pCur * i) / bins;
-        const curT = interpScoreAtTime(targetGraph, tSt + p * tDur);
-        const curR = interpScoreAtTime(refGraph, rSt + p * rDur);
-        vecT.push(Math.max(0, curT - prevT) / tCurVal);
-        vecR.push(Math.max(0, curR - prevR) / rCurVal);
-        prevT = curT;
-        prevR = curR;
-      }
-
-      let dot = 0, normT = 0, normR = 0;
-      for (let i = 0; i < bins; i++) {
-        dot += vecT[i] * vecR[i];
-        normT += vecT[i] * vecT[i];
-        normR += vecR[i] * vecR[i];
-      }
-      const cosSim = normT > 0 && normR > 0 ? dot / Math.sqrt(normT * normR) : 0.5;
-
-      // 前半半分 vs 後半半分の傾き比（加速型か減速型か）の一致度
-      const halfIdx = Math.floor(bins / 2);
-      const tFirst = vecT.slice(0, halfIdx).reduce((a, b) => a + b, 0);
-      const tSecond = vecT.slice(halfIdx).reduce((a, b) => a + b, 0);
-      const rFirst = vecR.slice(0, halfIdx).reduce((a, b) => a + b, 0);
-      const rSecond = vecR.slice(halfIdx).reduce((a, b) => a + b, 0);
-
-      const tSlope = (tSecond + 0.05) / (tFirst + 0.05);
-      const rSlope = (rSecond + 0.05) / (rFirst + 0.05);
-      const slopeRatio = Math.min(tSlope, rSlope) / Math.max(tSlope, rSlope);
-
-      const combined = Math.pow(Math.max(0, cosSim), 2.0) * (0.4 + 0.6 * slopeRatio);
-      return Math.max(0.15, Math.min(1.0, combined));
-    }
-
-    function getChapterNumber(item) {
-      const rawId = `${item?.chapterId || ""} ${item?.key || ""}`;
-      const m = /chapter[-_]?0*(\d+)/i.exec(rawId);
-      return m ? Number(m[1]) : null;
-    }
-
-    function applyNaturalManualAdjustment(pred, adjustPt) {
-      if (!pred) return null;
-      const delta = Number(adjustPt) || 0;
-      if (pred.isFinished || delta === 0) {
-        return { ...pred, manualAdjustPt: 0 };
-      }
-      const cur = pred.currentScore;
-      const origFinal = pred.centralFinal;
-      const origGain = origFinal - cur;
-      const targetFinal = Math.max(cur, origFinal + delta);
-      const newGain = targetFinal - cur;
-      const scale = origGain > 1 ? newGain / origGain : 0;
-
-      const newMin = Math.max(cur, cur + (pred.minFinal - cur) * scale);
-      const newMax = Math.max(targetFinal, cur + (pred.maxFinal - cur) * scale);
-      const newSeries = pred.forecastSeries.map((pt, idx) => {
-        if (idx === 0) return pt;
-        return {
-          p: pt.p,
-          central: Math.max(cur, cur + (pt.central - cur) * scale),
-          min: Math.max(cur, cur + (pt.min - cur) * scale),
-          max: Math.max(cur, cur + (pt.max - cur) * scale),
-        };
       });
 
-      return {
-        ...pred,
-        centralFinal: targetFinal,
-        minFinal: newMin,
-        maxFinal: newMax,
-        halfSpread: Math.max(targetFinal - newMin, newMax - targetFinal),
-        forecastSeries: newSeries,
-        manualAdjustPt: Math.round(targetFinal - origFinal),
-      };
-    }
-
-    function computePrediction(targetItem, targetGraph, refPairs, targetRank) {
-      const st = targetGraph.startTime;
-      const et = targetGraph.endTime;
-      const dur = et - st;
-      const pts = targetGraph.tier;
-      const lastPt = pts[pts.length - 1];
-      const lastT = lastPt[0];
-      const currentScore = lastPt[1];
-      const elapsedMs = Math.max(60000, lastT - st);
-      const elapsedH = elapsedMs / 3600000;
-      const remMs = Math.max(0, et - lastT);
-      const remH = remMs / 3600000;
-      const pCur = Math.min(1, elapsedMs / dur);
-      const isFinished = pCur >= 0.998 && !targetItem.live;
-
-      // 有効な過去完了データの抽出
-      const validRefs = refPairs
-        .filter(({ graph }) => {
-          if (!graph || !Array.isArray(graph.tier) || graph.tier.length < 15) return false;
-          if (graph.rank && Number(graph.rank) !== Number(targetRank)) return false;
-          const gDur = graph.endTime - graph.startTime;
-          const gProg = (graph.tier[graph.tier.length - 1][0] - graph.startTime) / Math.max(1, gDur);
-          return gProg >= 0.98;
-        })
-        .sort((a, b) => b.graph.endTime - a.graph.endTime);
-
-      // 過去ログから「曜日 × 祝日 × 30分スロット」速度係数を学習
-      const getCalFactor = buildCalendarProfileFromRefs(validRefs.map((r) => r.graph));
-
-      // 1. 常に30分速EMA、終了3時間前から10分速EMAへ移行
-      const ema30m = computeEmaPace(targetGraph, lastT, 30, 4, 0.52);
-      const ema10m = computeEmaPace(targetGraph, lastT, 10, 4, 0.58);
-
-      let w10m = 0;
-      if (!isFinished && remH <= 3.0) {
-        // 残り3.0h -> 2.0h で 0% -> 65%、残り2.0h以下で 65% -> 90%
-        w10m = remH > 2.0 ? (3.0 - remH) * 0.65 : Math.min(0.90, 0.65 + (2.0 - remH) * 0.125);
-      }
-      const activeEmaPace = w10m > 0 ? ema30m * (1 - w10m) + ema10m * w10m : ema30m;
-      const curCalFactor = Math.max(0.18, getCalFactor(lastT - 15 * 60 * 1000));
-      const normalizedEmaPace = activeEmaPace / curCalFactor;
-
-      // 2. 残り時間スロット列の構築（ラスト3h前までは30分刻み、ラスト3h〜終了は10分刻み）
-      const futureSlots = [];
-      if (!isFinished && remMs > 0) {
-        const final3hStart = et - 3 * 3600 * 1000;
-        let cursor = lastT;
-        while (cursor < et - 1000) {
-          const slotMs = cursor >= final3hStart ? 10 * 60 * 1000 : 30 * 60 * 1000;
-          const nextT = Math.min(et, cursor + slotMs);
-          const midT = (cursor + nextT) * 0.5;
-          futureSlots.push({
-            t0: cursor,
-            t1: nextT,
-            p0: (cursor - st) / dur,
-            p1: (nextT - st) / dur,
-            pMid: (midT - st) / dur,
-            dtH: (nextT - cursor) / 3600000,
-            remHMid: (et - midT) / 3600000,
-            calFactor: getCalFactor(midT),
-            is10mZone: cursor >= final3hStart,
-          });
-          cursor = nextT;
-        }
-      }
-
-      // 3. 伸び方（形状）類似度に基づく参照イベントの重み付けと個別予測カーブ生成
-      const targetChNum = getChapterNumber(targetItem);
-      const rankNum = Number(targetRank);
-      const refModels = [];
-      const rNows = [];
-      const rPaces = [];
-
-      for (const rObj of validRefs) {
-        const { item, graph } = rObj;
-        const gSt = graph.startTime;
-        const gDur = graph.endTime - gSt;
-        const hCur = interpScoreAtProgress(graph, pCur);
-        const hFinal = graph.tier[graph.tier.length - 1][1];
-        if (!hCur || hCur <= 0 || hFinal <= hCur) continue;
-
-        // 伸び方（形状）類似度
-        const shapeSim = calcTrajectoryShapeSimilarity(targetGraph, graph, pCur);
-
-        // 現在水準比と直近EMA速度比（カレンダー正規化後）
-        const rNow = currentScore / hCur;
-        const hTargetT = gSt + pCur * gDur;
-        const hEma30m = computeEmaPace(graph, hTargetT, 30, 4, 0.52);
-        const hEma10m = computeEmaPace(graph, hTargetT, 10, 4, 0.58);
-        const hActiveEma = w10m > 0 ? hEma30m * (1 - w10m) + hEma10m * w10m : hEma30m;
-        const hCalFactor = Math.max(0.18, getCalFactor(hTargetT - 15 * 60 * 1000));
-        const hNormEma = hActiveEma / hCalFactor;
-
-        const rawRPace = hNormEma > 0 ? normalizedEmaPace / hNormEma : rNow;
-        const clampRange = remH <= 3.0 ? 0.55 : 0.32;
-        const rPace = Math.max(rNow * (1 - clampRange), Math.min(rNow * (1 + clampRange), rawRPace));
-
-        rNows.push(rNow);
-        rPaces.push(rPace);
-
-        // 累積水準と直近EMA速度のブレンド比率（終盤ほどEMA速度を重視）
-        const wPace = remH <= 3.0 ? 0.72 : remH <= 6.0 ? 0.52 : pCur < 0.25 ? 0.42 : 0.32;
-        const baseScale = (1 - wPace) * rNow + wPace * rPace;
-
-        // 各未来スロットの増分を「参照イベントの純粋増分 × 今回の曜日・祝日係数」で再合成
-        const slotCurve = [currentScore];
-        let acc = currentScore;
-
-        if (!isFinished) {
-          for (let i = 0; i < futureSlots.length; i++) {
-            const sl = futureSlots[i];
-            const gT0 = gSt + sl.p0 * gDur;
-            const gT1 = gSt + sl.p1 * gDur;
-            const gMid = (gT0 + gT1) * 0.5;
-            const rawDh = Math.max(0, interpScoreAtTime(graph, gT1) - interpScoreAtTime(graph, gT0));
-
-            // 参照回側の当時のカレンダー係数を剥がし、今回のカレンダー係数を乗せる
-            const refCal = Math.max(0.20, getCalFactor(gMid));
-            const calAdjustedDh = rawDh * (sl.calFactor / refCal);
-
-            // 時間の経過とともに実測EMA倍率からベース水準へ緩やかに減衰
-            const elapsedFromNowH = (sl.t0 + sl.t1) * 0.5 - lastT;
-            const decay = Math.exp(-Math.max(0, elapsedFromNowH) / (18 * 3600 * 1000));
-            const slotScale = rNow * (1 - decay) + baseScale * decay;
-
-            acc += calAdjustedDh * slotScale;
-            slotCurve.push(acc);
-          }
-        }
-
-        // 総合重み：伸び方（形状）類似度を最重視＋チャプター種別一致＋規模の近さ
-        const refChNum = getChapterNumber(item);
-        let chWeight = 1.0;
-        if (targetChNum != null && refChNum != null) {
-          if (targetChNum === refChNum) chWeight = 1.35;
-          else if ((targetChNum === 5) === (refChNum === 5)) chWeight = 1.15;
-        }
-        const scaleSim = Math.min(rNow, 1 / Math.max(1e-4, rNow));
-        const weight = Math.pow(shapeSim, 1.6) * chWeight * (0.35 + 0.65 * scaleSim);
-
-        refModels.push({
-          item,
-          graph,
-          hCur,
-          hFinal,
-          rNow,
-          rPace,
-          shapeSim,
-          impliedFinal: isFinished ? currentScore : acc,
-          slotCurve,
-          weight,
-        });
-      }
-
-      refModels.sort((a, b) => b.weight - a.weight);
-
-      const medRNow = calcMedian(rNows);
-      const medRPace = calcMedian(rPaces);
-      const liveHeat = 0.55 * medRNow + 0.45 * medRPace;
-
-      // 4. 実測加速検知に基づく「条件付き」終盤スパート補正
-      // （前半が緩やかでも、実際に終盤の加速が始まった時のみ段階的に引き上げる）
-      let spurtBoost = 1.0;
-      let surgeDetectedRatio = 1.0;
-      if (!isFinished && remH <= 12.0 && elapsedH >= 4.0) {
-        const prevCheckT = Math.max(st + 60 * 60 * 1000, lastT - 2.5 * 3600 * 1000);
-        const prevEma = computeEmaPace(targetGraph, prevCheckT, 30, 3, 0.52);
-        const prevCal = Math.max(0.18, getCalFactor(prevCheckT - 15 * 60 * 1000));
-        const normPrevEma = prevEma / prevCal;
-
-        if (normPrevEma > 0) {
-          surgeDetectedRatio = normalizedEmaPace / normPrevEma;
-          // カレンダー要因を除いた純粋な時速が2.5時間前より6%以上加速している場合のみ発動
-          if (surgeDetectedRatio > 1.06) {
-            const tierSensitivity = rankNum <= 1000 ? 0.34 : rankNum >= 10000 ? 0.22 : 0.14;
-            const maxCap = rankNum <= 1000 ? 1.32 : rankNum >= 10000 ? 1.20 : 1.12;
-            spurtBoost = Math.min(maxCap, 1.0 + (surgeDetectedRatio - 1.06) * tierSensitivity);
-          }
-        }
-      }
-
-      // 5. 全スロット積算 ＆ 過去データの加重標準偏差（σ）による動的レンジ算出
-      const forecastSeries = [];
-      let centralFinal = currentScore;
-      let minFinal = currentScore;
-      let maxFinal = currentScore;
-
-      if (!isFinished && refModels.length > 0 && futureSlots.length > 0) {
-        const totalW = refModels.reduce((acc, m) => acc + m.weight, 0);
-
-        // 各スロットのベース増分を加重平均し、条件付きスパート補正を適用して積算
-        let runningCentral = currentScore;
-        const centralPoints = [{ p: pCur, val: currentScore }];
-
-        for (let i = 0; i < futureSlots.length; i++) {
-          const sl = futureSlots[i];
-          let slotBaseInc = 0;
-          for (const m of refModels) {
-            const mInc = m.slotCurve[i + 1] - m.slotCurve[i];
-            slotBaseInc += mInc * m.weight;
-          }
-          slotBaseInc /= totalW;
-
-          // 条件付きスパート補正はラスト6時間以内に集中適用
-          const spurtWeight = sl.remHMid <= 6.0 ? Math.min(1.0, (6.0 - sl.remHMid) / 4.0 + 0.35) : 0.15;
-          const effSpurt = 1.0 + (spurtBoost - 1.0) * spurtWeight;
-
-          runningCentral += slotBaseInc * effSpurt;
-          centralPoints.push({ p: sl.p1, val: runningCentral });
-        }
-
-        centralFinal = runningCentral;
-
-        // 類似チャプター群の「最終着地予測値」の加重標準偏差 σ を算出
-        const rawAvgImplied = refModels.reduce((acc, m) => acc + m.impliedFinal * m.weight, 0) / totalW;
-        const spurtScaleTotal =
-          rawAvgImplied > currentScore
-            ? (centralFinal - currentScore) / Math.max(1, rawAvgImplied - currentScore)
-            : 1.0;
-
-        const variance =
-          refModels.reduce((acc, m) => {
-            const scaledImp = currentScore + (m.impliedFinal - currentScore) * spurtScaleTotal;
-            return acc + m.weight * Math.pow(scaledImp - centralFinal, 2);
-          }, 0) / totalW;
-
-        const stdDev = Math.sqrt(variance);
-        // 階級別の信頼係数（ドリーム級は終盤変動が大きいためやや広め、ダイヤ・プラチナはタイトに）
-        const sigmaMult = rankNum <= 1000 ? 1.25 : rankNum >= 10000 ? 1.15 : 1.05;
-        const minFloorRatio = Math.max(0.025, 0.065 * Math.pow(1 - pCur, 0.7));
-        const spreadMargin = Math.max(stdDev * sigmaMult, (centralFinal - currentScore) * minFloorRatio);
-
-        minFinal = Math.max(currentScore, centralFinal - spreadMargin);
-        maxFinal = centralFinal + spreadMargin;
-
-        for (let i = 0; i < centralPoints.length; i++) {
-          const pt = centralPoints[i];
-          if (i === 0) {
-            forecastSeries.push({ p: pt.p, central: currentScore, min: currentScore, max: currentScore });
-            continue;
-          }
-          const stepRatio = (pt.p - pCur) / Math.max(1e-4, 1 - pCur);
-          const curMargin = spreadMargin * Math.pow(stepRatio, 0.85);
-          forecastSeries.push({
-            p: pt.p,
-            central: pt.val,
-            min: Math.max(currentScore, pt.val - curMargin),
-            max: pt.val + curMargin,
-          });
-        }
-      } else if (!isFinished) {
-        const naiveLinear = pCur > 0.02 ? currentScore / pCur : currentScore;
-        centralFinal = Math.max(naiveLinear * 1.08, currentScore + normalizedEmaPace * remH);
-        minFinal = centralFinal * 0.93;
-        maxFinal = centralFinal * 1.09;
-        forecastSeries.push({ p: pCur, central: currentScore, min: currentScore, max: currentScore });
-        forecastSeries.push({ p: 1, central: centralFinal, min: minFinal, max: maxFinal });
-      }
-
-      const halfSpread = isFinished ? 0 : Math.max(centralFinal - minFinal, maxFinal - centralFinal);
-      const topMatch = refModels[0];
-
-      return {
-        targetItem,
-        targetGraph,
-        rank: targetRank,
-        currentScore,
-        lastT,
-        elapsedH,
-        totalH: dur / 3600000,
-        pCur,
-        isFinished,
-        recentPace: activeEmaPace,
-        centralFinal,
-        minFinal,
-        maxFinal,
-        halfSpread,
-        forecastSeries,
-        refModels,
-        metaInfo: {
-          refCount: refModels.length,
-          zoneLabel: remH <= 3.0 ? "終盤10分速EMA域" : "通常30分速EMA域",
-          wPacePct: remH <= 3.0 ? 72 : remH <= 6.0 ? 52 : 35,
-          w10mPct: Math.round(w10m * 100),
-          pace10m: ema10m,
-          pace30m: ema30m,
-          liveHeat,
-          spurtBoost,
-          topShapeSim: topMatch ? topMatch.shapeSim : 0,
-          topMatchName: topMatch ? topMatch.item.shortLabel : "-",
-        },
-      };
-    }
-
-    function getPredictionFor(eventKey, targetRank) {
-      const targetItem = state.eligibleItems.find((x) => x.key === eventKey);
-      if (!targetItem) return null;
-      const targetGraph = state.graphCache.get(`${targetItem.key}::${targetRank}`);
-      if (!targetGraph) return null;
-
-      const refPairs = [];
-      for (const cand of state.eligibleItems) {
-        if (cand.key === targetItem.key || cand.live) continue;
-        if (cand.category !== targetItem.category) continue;
-        const g = state.graphCache.get(`${cand.key}::${targetRank}`);
-        if (g) refPairs.push({ item: cand, graph: g });
-      }
-
-      const basePred = computePrediction(targetItem, targetGraph, refPairs, targetRank);
-      const adjPt = Number((state.manualAdjustments[eventKey] || {})[targetRank]) || 0;
-      return applyNaturalManualAdjustment(basePred, adjPt);
-    }
-
-    // =========================================================================
-    // 6. 高解像度 Canvas 描画（トリプル: 2160×820 / デュアル・シングル: 1600×900）
-    // =========================================================================
-    function getTierRankTitle(rank) {
-      const r = Number(rank);
-      if (r === 1000) return "ドリーム級";
-      if (r === 5000) return "ダイヤ級";
-      if (r === 10000) return "プラチナ級";
-      return null;
-    }
-
-    function getTierTheme(rank) {
-      let key = state.themeOverride || "auto";
-      if (key === "auto") {
-        if (rank <= 1000) key = "rainbow";
-        else if (rank <= 5000) key = "purple";
-        else if (rank <= 10000) key = "platinum";
-        else if (rank <= 50000) key = "gold";
-        else if (rank <= 100000) key = "silver";
-        else key = "bronze";
-      }
-
-      const themes = {
-        rainbow: {
-          bgStops: ["#0c0a1d", "#181236", "#0b192c"],
-          borderStops: ["#ff4d6d", "#ffb703", "#06d6a0", "#3a86ff", "#c77dff", "#ff4d6d"],
-          primary: "#ffffff",
-          accent: "#38bdf8",
-          forecast: "#ffbe0b",
-          bandFill: "rgba(255, 190, 11, 0.22)",
-          glowColor: "rgba(168, 85, 247, 0.75)",
-          sparkle: true,
-          rainbow: true,
-        },
-        purple: {
-          bgStops: ["#120724", "#240e47", "#140829"],
-          borderStops: ["#a855f7", "#f0abfc", "#7e22ce", "#e879f9"],
-          primary: "#f3e8ff",
-          accent: "#d8b4fe",
-          forecast: "#f0abfc",
-          bandFill: "rgba(216, 180, 254, 0.22)",
-          glowColor: "rgba(217, 70, 239, 0.85)",
-          sparkle: true,
-          rainbow: false,
-        },
-        platinum: {
-          bgStops: ["#101822", "#1e2c3d", "#131c28"],
-          borderStops: ["#e0f2fe", "#7dd3fc", "#f8fafc", "#38bdf8"],
-          primary: "#f0f9ff",
-          accent: "#7dd3fc",
-          forecast: "#bae6fd",
-          bandFill: "rgba(125, 211, 252, 0.20)",
-          glowColor: "rgba(125, 211, 252, 0.55)",
-          sparkle: false,
-          rainbow: false,
-        },
-        gold: {
-          bgStops: ["#1c1507", "#33260c", "#1a1306"],
-          borderStops: ["#fde047", "#f59e0b", "#fef08a", "#d97706"],
-          primary: "#fef9c3",
-          accent: "#fde047",
-          forecast: "#fbbf24",
-          bandFill: "rgba(251, 191, 36, 0.20)",
-          glowColor: "rgba(245, 158, 11, 0.50)",
-          sparkle: false,
-          rainbow: false,
-        },
-        silver: {
-          bgStops: ["#14171c", "#262b34", "#161920"],
-          borderStops: ["#e2e8f0", "#94a3b8", "#f1f5f9", "#64748b"],
-          primary: "#f1f5f9",
-          accent: "#cbd5e1",
-          forecast: "#e2e8f0",
-          bandFill: "rgba(203, 213, 225, 0.18)",
-          glowColor: "rgba(148, 163, 184, 0.35)",
-          sparkle: false,
-          rainbow: false,
-        },
-        bronze: {
-          bgStops: ["#1a100b", "#2e1c13", "#180e0a"],
-          borderStops: ["#fdba74", "#c2410c", "#fed7aa", "#9a3412"],
-          primary: "#ffedd5",
-          accent: "#fdba74",
-          forecast: "#fb923c",
-          bandFill: "rgba(251, 146, 60, 0.18)",
-          glowColor: "rgba(194, 65, 12, 0.35)",
-          sparkle: false,
-          rainbow: false,
-        },
-      };
-      return themes[key] || themes.silver;
-    }
-
-    function drawRoundRect(ctx, x, y, w, h, r) {
-      ctx.beginPath();
-      ctx.moveTo(x + r, y);
-      ctx.arcTo(x + w, y, x + w, y + h, r);
-      ctx.arcTo(x + w, y + h, x, y + h, r);
-      ctx.arcTo(x, y + h, x, y, r);
-      ctx.arcTo(x, y, x + w, y, r);
-      ctx.closePath();
-    }
-
-    function drawFittedText(ctx, text, x, y, maxWidth) {
-      let str = String(text || "");
-      if (ctx.measureText(str).width <= maxWidth) {
-        ctx.fillText(str, x, y);
-        return;
-      }
-      while (str.length > 1 && ctx.measureText(str + "…").width > maxWidth) {
-        str = str.slice(0, -1);
-      }
-      ctx.fillText(str + "…", x, y);
-    }
-
-    let syncPredictionTimer = null;
-
-    async function canvasToOptimizedBlob(canvas) {
-      const pngBlob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
-      if (pngBlob && pngBlob.size <= 850 * 1024) {
-        return { blob: pngBlob, filename: "border_prediction.png" };
-      }
-      let jpgBlob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.92));
-      if (jpgBlob && jpgBlob.size > 900 * 1024) {
-        jpgBlob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.82));
-      }
-      return { blob: jpgBlob || pngBlob, filename: jpgBlob ? "border_prediction.jpg" : "border_prediction.png" };
-    }
-
-    function scheduleSyncPredictionCache() {
-      if (!adminPassword || !state.selectedKey) return;
-      const hasAnyGraph = TIER_DEFS.some((t) => state.graphCache.has(`${state.selectedKey}::${t.rank}`));
-      if (!hasAnyGraph) return;
-
-      clearTimeout(syncPredictionTimer);
-      syncPredictionTimer = setTimeout(async () => {
-        try {
-          const canvas = document.getElementById("reportCanvas");
-          const { blob, filename } = await canvasToOptimizedBlob(canvas);
-          if (!blob) return;
-
-          const formData = new FormData();
-          formData.append("timeLabel", getLatestDataTimeLabel());
-          formData.append("image", blob, filename);
-
-          await apiFetch("/api/admin/cache-prediction", {
-            method: "POST",
-            body: formData,
-          });
-        } catch (_) {}
-      }, 1200);
-    }
-
-    function renderActiveCanvas() {
-      const canvas = document.getElementById("reportCanvas");
-      if (state.mode === "single") {
-        canvas.width = 1600;
-        canvas.height = 900;
-        const pred = getPredictionFor(state.single.key, state.single.rank);
-        drawSingleCard(canvas, pred);
-      } else if (state.mode === "dual") {
-        canvas.width = 1600;
-        canvas.height = 900;
-        drawMultiCards(canvas, state.dual);
-      } else {
-        canvas.width = 2160;
-        canvas.height = 820;
-        drawMultiCards(canvas, state.triple);
-      }
-      scheduleSyncPredictionCache();
-    }
-
-    function drawSingleCard(canvas, pred) {
-      const ctx = canvas.getContext("2d");
-      const W = canvas.width;
-      const H = canvas.height;
-      ctx.clearRect(0, 0, W, H);
-
-      if (!pred) {
-        ctx.fillStyle = "#0f172a";
-        ctx.fillRect(0, 0, W, H);
-        ctx.fillStyle = "#ffffff";
-        ctx.font = "700 30px sans-serif";
-        ctx.fillText("対象イベントのグラフデータが未取得です。上のボタンからAPIデータをコピーしてください。", 64, 120);
-        return;
-      }
-
-      const theme = getTierTheme(pred.rank);
-      const rankTitle = getTierRankTitle(pred.rank);
-
-      const bgGrad = ctx.createLinearGradient(0, 0, W, H);
-      bgGrad.addColorStop(0, theme.bgStops[0]);
-      bgGrad.addColorStop(0.5, theme.bgStops[1]);
-      bgGrad.addColorStop(1, theme.bgStops[2]);
-      ctx.fillStyle = bgGrad;
-      ctx.fillRect(0, 0, W, H);
-
-      const radial = ctx.createRadialGradient(W * 0.78, H * 0.22, 30, W * 0.78, H * 0.22, 620);
-      radial.addColorStop(0, theme.glowColor);
-      radial.addColorStop(1, "rgba(0,0,0,0)");
-      ctx.fillStyle = radial;
-      ctx.fillRect(0, 0, W, H);
-
-      if (theme.rainbow) {
-        const rbAura = ctx.createLinearGradient(0, 0, W, H);
-        rbAura.addColorStop(0, "rgba(255, 77, 109, 0.14)");
-        rbAura.addColorStop(0.25, "rgba(255, 183, 3, 0.12)");
-        rbAura.addColorStop(0.5, "rgba(6, 214, 160, 0.12)");
-        rbAura.addColorStop(0.75, "rgba(58, 134, 255, 0.14)");
-        rbAura.addColorStop(1, "rgba(199, 125, 255, 0.16)");
-        ctx.fillStyle = rbAura;
-        ctx.fillRect(0, 0, W, H);
-      }
-
-      if (theme.sparkle) {
-        const stars = [
-          [120, 126, 4.0], [320, 82, 2.6], [1440, 118, 4.8], [1490, 280, 3.2],
-          [1300, 186, 3.6], [1010, 100, 2.8], [1370, 745, 3.8], [186, 785, 3.2],
-          [826, 146, 2.4], [1170, 810, 2.8], [1520, 640, 3.6], [610, 76, 3.0],
-        ];
-        for (const [sx, sy, sr] of stars) {
-          ctx.save();
-          ctx.fillStyle = "#ffffff";
-          ctx.shadowColor = theme.forecast;
-          ctx.shadowBlur = 18;
-          ctx.beginPath();
-          ctx.arc(sx, sy, sr, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.restore();
-        }
-      }
-
-      const borderGrad = ctx.createLinearGradient(0, 0, W, H);
-      theme.borderStops.forEach((c, idx) => {
-        borderGrad.addColorStop(idx / Math.max(1, theme.borderStops.length - 1), c);
-      });
-      ctx.save();
-      drawRoundRect(ctx, 22, 22, W - 44, H - 44, 24);
-      ctx.lineWidth = 6;
-      ctx.strokeStyle = borderGrad;
-      if (theme.sparkle) {
-        ctx.shadowColor = theme.glowColor;
-        ctx.shadowBlur = 28;
-      }
-      ctx.stroke();
-      ctx.restore();
-
-      ctx.fillStyle = "rgba(255, 255, 255, 0.68)";
-      ctx.font = "600 23px sans-serif";
-      ctx.fillText(
-        `${pred.targetItem.catLabel}  ｜  開催: ${formatJST(pred.targetItem.startTime)} 〜 ${formatJST(pred.targetItem.endTime)}`,
-        64,
-        88
-      );
-
-      const rankBadgeW = rankTitle ? 360 : 310;
-      const rankBadgeH = 70;
-      const rankBadgeX = W - 64 - rankBadgeW;
-      const rankBadgeY = 64;
-
-      ctx.save();
-      ctx.font = "800 46px sans-serif";
-      ctx.fillStyle = theme.primary;
-      if (theme.sparkle) {
-        ctx.shadowColor = theme.glowColor;
-        ctx.shadowBlur = 20;
-      }
-      drawFittedText(ctx, pred.targetItem.shortLabel, 64, 148, W - 150 - rankBadgeW);
-      ctx.restore();
-
-      ctx.save();
-      drawRoundRect(ctx, rankBadgeX, rankBadgeY, rankBadgeW, rankBadgeH, 14);
-      ctx.fillStyle = "rgba(255, 255, 255, 0.10)";
-      ctx.fill();
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = borderGrad;
-      ctx.stroke();
-      ctx.fillStyle = theme.primary;
-      ctx.font = "800 32px sans-serif";
-      ctx.textAlign = "center";
-      const badgeTxt = rankTitle ? `${rankTitle} / T${pred.rank.toLocaleString()}` : `T${pred.rank.toLocaleString()} ボーダー`;
-      ctx.fillText(badgeTxt, rankBadgeX + rankBadgeW / 2, rankBadgeY + 46);
-      ctx.restore();
-
-      const leftX = 64;
-      const leftY = 188;
-      const leftW = 572;
-      const leftH = 630;
-      ctx.save();
-      drawRoundRect(ctx, leftX, leftY, leftW, leftH, 18);
-      ctx.fillStyle = "rgba(0, 0, 0, 0.36)";
-      ctx.fill();
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = "rgba(255, 255, 255, 0.16)";
-      ctx.stroke();
-      ctx.restore();
-
-      ctx.fillStyle = "rgba(255, 255, 255, 0.72)";
-      ctx.font = "700 22px sans-serif";
-      ctx.fillText(pred.isFinished ? "最終確定ボーダー" : "最終着地予測ボーダー（本命）", leftX + 34, leftY + 54);
-
-      ctx.save();
-      ctx.font = "800 60px monospace";
-      if (theme.rainbow) {
-        const txtGrad = ctx.createLinearGradient(leftX + 34, 0, leftX + 520, 0);
-        txtGrad.addColorStop(0, "#ff758f");
-        txtGrad.addColorStop(0.35, "#ffd166");
-        txtGrad.addColorStop(0.7, "#06d6a0");
-        txtGrad.addColorStop(1, "#60a5fa");
-        ctx.fillStyle = txtGrad;
-      } else {
-        ctx.fillStyle = theme.forecast;
-      }
-      if (theme.sparkle) {
-        ctx.shadowColor = theme.glowColor;
-        ctx.shadowBlur = 22;
-      }
-      ctx.fillText(`${formatNumber(pred.centralFinal)} pt`, leftX + 34, leftY + 130);
-      ctx.restore();
-
-      if (!pred.isFinished) {
-        ctx.fillStyle = theme.accent;
-        ctx.font = "700 28px monospace";
-        ctx.fillText(`誤差目安: ±${formatNumber(pred.halfSpread)} pt`, leftX + 34, leftY + 180);
-
-        ctx.fillStyle = "rgba(255, 255, 255, 0.78)";
-        ctx.font = "600 21px monospace";
-        ctx.fillText(`レンジ: ${formatNumber(pred.minFinal)} 〜 ${formatNumber(pred.maxFinal)}`, leftX + 34, leftY + 220);
-      } else {
-        ctx.fillStyle = theme.accent;
-        ctx.font = "700 26px sans-serif";
-        ctx.fillText("イベント終了・確定値", leftX + 34, leftY + 184);
-      }
-
-      ctx.strokeStyle = "rgba(255, 255, 255, 0.14)";
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.moveTo(leftX + 32, leftY + 252);
-      ctx.lineTo(leftX + leftW - 32, leftY + 252);
-      ctx.stroke();
-
-      const subRows = [
-        ["現在スコア", `${formatNumber(pred.currentScore)} pt`],
-        ["経過 / 進捗", `${pred.elapsedH.toFixed(1)}h / ${pred.totalH.toFixed(0)}h (${(pred.pCur * 100).toFixed(1)}%)`],
-        ["直近平均時速", `${formatNumber(pred.recentPace)} pt/h`],
-        ["残り予測増分", pred.isFinished ? "0 pt" : `+${formatNumber(Math.max(0, pred.centralFinal - pred.currentScore))} pt`],
-        ["基準データ時刻", formatJST(pred.lastT)],
-      ];
-
-      subRows.forEach(([k, v], idx) => {
-        const ry = leftY + 308 + idx * 62;
-        ctx.fillStyle = "rgba(255, 255, 255, 0.62)";
-        ctx.font = "600 21px sans-serif";
-        ctx.fillText(k, leftX + 34, ry);
-
-        ctx.fillStyle = "#ffffff";
-        ctx.font = "700 22px monospace";
-        ctx.textAlign = "right";
-        ctx.fillText(v, leftX + leftW - 34, ry);
-        ctx.textAlign = "left";
+      el.downloadImgBtn.addEventListener("click", async () => {
+        const { blob, filename } = await exportCanvasBlob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(url);
       });
 
-      const rightX = 668;
-      const rightY = 188;
-      const rightW = W - rightX - 64;
-      const rightH = 630;
+      el.updateCacheOnlyBtn.addEventListener("click", () => submitCacheOrBroadcast(false));
+      el.broadcastBtn.addEventListener("click", () => submitCacheOrBroadcast(true));
 
-      ctx.save();
-      drawRoundRect(ctx, rightX, rightY, rightW, rightH, 18);
-      ctx.fillStyle = "rgba(0, 0, 0, 0.36)";
-      ctx.fill();
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = "rgba(255, 255, 255, 0.16)";
-      ctx.stroke();
-      ctx.restore();
-
-      const gPadL = 102, gPadR = 34, gPadT = 64, gPadB = 60;
-      const plotX = rightX + gPadL;
-      const plotY = rightY + gPadT;
-      const plotW = rightW - gPadL - gPadR;
-      const plotH = rightH - gPadT - gPadB;
-
-      ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
-      ctx.font = "700 20px sans-serif";
-      ctx.fillText("推移実績 & 着地予測レンジ", rightX + 32, rightY + 40);
-
-      let maxY = Math.max(pred.maxFinal, pred.currentScore);
-      for (const m of pred.refModels.slice(0, 3)) maxY = Math.max(maxY, m.hFinal);
-      maxY = Math.ceil((maxY * 1.06) / 100000) * 100000 || 500000;
-
-      const xOf = (p) => plotX + Math.max(0, Math.min(1, p)) * plotW;
-      const yOf = (v) => plotY + plotH - (Math.max(0, v) / maxY) * plotH;
-
-      ctx.font = "600 17px monospace";
-      ctx.textAlign = "right";
-      for (let i = 0; i <= 5; i++) {
-        const val = (maxY * i) / 5;
-        const gy = yOf(val);
-        ctx.strokeStyle = "rgba(255, 255, 255, 0.10)";
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.moveTo(plotX, gy);
-        ctx.lineTo(plotX + plotW, gy);
-        ctx.stroke();
-
-        ctx.fillStyle = "rgba(255, 255, 255, 0.65)";
-        const lbl = val >= 10000 ? `${(val / 10000).toFixed(0)}万` : formatNumber(val);
-        ctx.fillText(lbl, plotX - 14, gy + 6);
+      // セッション復元
+      if (state.password) {
+        attemptLogin(state.password).catch(() => {});
       }
-
-      ctx.textAlign = "center";
-      const stepH = pred.totalH <= 48 ? 6 : 24;
-      for (let h = 0; h <= pred.totalH; h += stepH) {
-        const gx = xOf(h / pred.totalH);
-        ctx.strokeStyle = "rgba(255, 255, 255, 0.07)";
-        ctx.beginPath();
-        ctx.moveTo(gx, plotY);
-        ctx.lineTo(gx, plotY + plotH);
-        ctx.stroke();
-
-        ctx.fillStyle = "rgba(255, 255, 255, 0.65)";
-        ctx.fillText(`${h}h`, gx, plotY + plotH + 28);
-      }
-      ctx.textAlign = "left";
-
-      pred.refModels.slice(0, 2).forEach((m) => {
-        const g = m.graph;
-        const dur = g.endTime - g.startTime;
-        ctx.save();
-        ctx.strokeStyle = "rgba(255, 255, 255, 0.22)";
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        const step = Math.max(1, Math.floor(g.tier.length / 150));
-        for (let i = 0; i < g.tier.length; i += step) {
-          const [t, v] = g.tier[i];
-          const px = xOf((t - g.startTime) / dur);
-          const py = yOf(v);
-          if (i === 0) ctx.moveTo(px, py);
-          else ctx.lineTo(px, py);
-        }
-        ctx.stroke();
-        ctx.restore();
-      });
-
-      if (!pred.isFinished && pred.forecastSeries.length > 1) {
-        ctx.save();
-        ctx.fillStyle = theme.bandFill;
-        ctx.beginPath();
-        pred.forecastSeries.forEach((pt, i) => {
-          const px = xOf(pt.p);
-          const py = yOf(pt.max);
-          if (i === 0) ctx.moveTo(px, py);
-          else ctx.lineTo(px, py);
-        });
-        for (let i = pred.forecastSeries.length - 1; i >= 0; i--) {
-          const pt = pred.forecastSeries[i];
-          ctx.lineTo(xOf(pt.p), yOf(pt.min));
-        }
-        ctx.closePath();
-        ctx.fill();
-
-        ctx.setLineDash([10, 8]);
-        ctx.lineWidth = 4.2;
-        ctx.strokeStyle = theme.forecast;
-        if (theme.sparkle) {
-          ctx.shadowColor = theme.glowColor;
-          ctx.shadowBlur = 14;
-        }
-        ctx.beginPath();
-        pred.forecastSeries.forEach((pt, i) => {
-          const px = xOf(pt.p);
-          const py = yOf(pt.central);
-          if (i === 0) ctx.moveTo(px, py);
-          else ctx.lineTo(px, py);
-        });
-        ctx.stroke();
-        ctx.restore();
-      }
-
-      const tPts = pred.targetGraph.tier;
-      const tDur = pred.targetGraph.endTime - pred.targetGraph.startTime;
-      ctx.save();
-      if (theme.rainbow) {
-        const lineGrad = ctx.createLinearGradient(plotX, 0, plotX + plotW, 0);
-        lineGrad.addColorStop(0, "#ff4d6d");
-        lineGrad.addColorStop(0.3, "#ffb703");
-        lineGrad.addColorStop(0.6, "#06d6a0");
-        lineGrad.addColorStop(1, "#3a86ff");
-        ctx.strokeStyle = lineGrad;
-      } else {
-        ctx.strokeStyle = theme.accent;
-      }
-      ctx.lineWidth = 5;
-      if (theme.sparkle) {
-        ctx.shadowColor = theme.glowColor;
-        ctx.shadowBlur = 16;
-      }
-      ctx.beginPath();
-      const step = Math.max(1, Math.floor(tPts.length / 220));
-      for (let i = 0; i < tPts.length; i += step) {
-        const [t, v] = tPts[i];
-        const px = xOf((t - pred.targetGraph.startTime) / tDur);
-        const py = yOf(v);
-        if (i === 0) ctx.moveTo(px, py);
-        else ctx.lineTo(px, py);
-      }
-      const [lt, lv] = tPts[tPts.length - 1];
-      const lx = xOf((lt - pred.targetGraph.startTime) / tDur);
-      const ly = yOf(lv);
-      ctx.lineTo(lx, ly);
-      ctx.stroke();
-
-      ctx.fillStyle = "#ffffff";
-      ctx.beginPath();
-      ctx.arc(lx, ly, 7.5, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-
-      const endY = yOf(pred.centralFinal);
-      ctx.save();
-      ctx.fillStyle = theme.forecast;
-      ctx.beginPath();
-      ctx.arc(xOf(1), endY, 7.5, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-
-      ctx.fillStyle = "rgba(255, 255, 255, 0.48)";
-      ctx.font = "600 17px monospace";
-      ctx.textAlign = "right";
-      ctx.fillText(`Generated at ${formatJST(Date.now())} JST`, W - 64, H - 38);
-      ctx.textAlign = "left";
-    }
-
-    function drawMultiCards(canvas, slots) {
-      const ctx = canvas.getContext("2d");
-      const W = canvas.width;
-      const H = canvas.height;
-      const isTriple = slots.length >= 3;
-      ctx.clearRect(0, 0, W, H);
-
-      const baseBg = ctx.createLinearGradient(0, 0, W, H);
-      baseBg.addColorStop(0, "#090c15");
-      baseBg.addColorStop(0.5, "#111626");
-      baseBg.addColorStop(1, "#090c15");
-      ctx.fillStyle = baseBg;
-      ctx.fillRect(0, 0, W, H);
-
-      const marginX = 32;
-      const gapX = 24;
-
-      const primaryItem =
-        state.eligibleItems.find((x) => x.key === slots[0]?.key) ||
-        state.eligibleItems.find((x) => x.key === state.selectedKey);
-
-      const topBarY = 22;
-      const topBarH = 88;
-      ctx.save();
-      drawRoundRect(ctx, marginX, topBarY, W - marginX * 2, topBarH, 14);
-      ctx.fillStyle = "rgba(255, 255, 255, 0.05)";
-      ctx.fill();
-      ctx.lineWidth = 1.5;
-      ctx.strokeStyle = "rgba(255, 255, 255, 0.14)";
-      ctx.stroke();
-      ctx.restore();
-
-      ctx.save();
-      drawRoundRect(ctx, marginX + 16, topBarY + 16, 6, topBarH - 32, 3);
-      ctx.fillStyle = "#38bdf8";
-      ctx.fill();
-      ctx.restore();
-
-      if (primaryItem) {
-        ctx.fillStyle = "rgba(255, 255, 255, 0.68)";
-        ctx.font = "600 16px sans-serif";
-        ctx.fillText(
-          `${primaryItem.catLabel}  ｜  開催期間: ${formatJST(primaryItem.startTime)} 〜 ${formatJST(primaryItem.endTime)}`,
-          marginX + 36,
-          topBarY + 32
-        );
-
-        const fullTitle = primaryItem.chapterName
-          ? `${primaryItem.eventName}  ／  ${primaryItem.chapterName}`
-          : primaryItem.eventName || primaryItem.shortLabel;
-
-        ctx.fillStyle = "#ffffff";
-        ctx.font = "800 32px sans-serif";
-        drawFittedText(ctx, fullTitle, marginX + 36, topBarY + 72, W - marginX * 2 - 420);
-      } else {
-        ctx.fillStyle = "#ffffff";
-        ctx.font = "800 30px sans-serif";
-        ctx.fillText("イベントデータ待機中", marginX + 36, topBarY + 56);
-      }
-
-      ctx.fillStyle = "rgba(255, 255, 255, 0.72)";
-      ctx.font = "700 16px sans-serif";
-      ctx.textAlign = "right";
-      ctx.fillText(
-        isTriple ? "BORDER FORECAST OVERVIEW" : "BORDER FORECAST COMPARISON",
-        W - marginX - 22,
-        topBarY + 34
-      );
-
-      ctx.fillStyle = "rgba(255, 255, 255, 0.52)";
-      ctx.font = "600 15px monospace";
-      ctx.fillText(`Generated at ${formatJST(Date.now())} JST`, W - marginX - 22, topBarY + 68);
-      ctx.textAlign = "left";
-
-      const cardY = topBarY + topBarH + 18;
-      const cardH = H - cardY - 24;
-      const cardW = (W - marginX * 2 - gapX * (slots.length - 1)) / slots.length;
-
-      slots.forEach((slot, idx) => {
-        const pred = getPredictionFor(slot.key, slot.rank);
-        const meta = {
-          item: state.eligibleItems.find((x) => x.key === slot.key),
-          rank: slot.rank,
-        };
-        const cx = marginX + idx * (cardW + gapX);
-        drawComparisonSlot(ctx, cx, cardY, cardW, cardH, pred, meta);
-      });
-    }
-
-    function drawComparisonSlot(ctx, x, y, w, h, pred, meta) {
-      const rank = pred ? pred.rank : meta.rank || 5000;
-      const theme = getTierTheme(rank);
-      const rankTitle = getTierRankTitle(rank);
-
-      ctx.save();
-      drawRoundRect(ctx, x, y, w, h, 18);
-      const cardBg = ctx.createLinearGradient(x, y, x + w, y + h);
-      cardBg.addColorStop(0, theme.bgStops[0]);
-      cardBg.addColorStop(0.5, theme.bgStops[1]);
-      cardBg.addColorStop(1, theme.bgStops[2]);
-      ctx.fillStyle = cardBg;
-      ctx.fill();
-
-      const aura = ctx.createRadialGradient(x + w * 0.8, y + 80, 15, x + w * 0.8, y + 80, 320);
-      aura.addColorStop(0, theme.glowColor);
-      aura.addColorStop(1, "rgba(0,0,0,0)");
-      ctx.fillStyle = aura;
-      ctx.fillRect(x, y, w, h);
-
-      if (theme.rainbow) {
-        const rbAura = ctx.createLinearGradient(x, y, x + w, y + h);
-        rbAura.addColorStop(0, "rgba(255, 77, 109, 0.14)");
-        rbAura.addColorStop(0.35, "rgba(255, 183, 3, 0.12)");
-        rbAura.addColorStop(0.7, "rgba(6, 214, 160, 0.12)");
-        rbAura.addColorStop(1, "rgba(58, 134, 255, 0.16)");
-        ctx.fillStyle = rbAura;
-        ctx.fillRect(x, y, w, h);
-      }
-      ctx.restore();
-
-      if (theme.sparkle) {
-        const relStars = [
-          [44, 46, 2.8], [w - 50, 40, 3.2], [w - 100, 125, 2.5],
-          [w - 44, h - 46, 2.8], [52, h - 42, 2.3], [w * 0.55, 32, 2.2],
-        ];
-        for (const [sx, sy, sr] of relStars) {
-          ctx.save();
-          ctx.fillStyle = "#ffffff";
-          ctx.shadowColor = theme.forecast;
-          ctx.shadowBlur = 14;
-          ctx.beginPath();
-          ctx.arc(x + sx, y + sy, sr, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.restore();
-        }
-      }
-
-      const borderGrad = ctx.createLinearGradient(x, y, x + w, y + h);
-      theme.borderStops.forEach((c, idx) => {
-        borderGrad.addColorStop(idx / Math.max(1, theme.borderStops.length - 1), c);
-      });
-      ctx.save();
-      drawRoundRect(ctx, x, y, w, h, 18);
-      ctx.lineWidth = 4.5;
-      ctx.strokeStyle = borderGrad;
-      if (theme.sparkle) {
-        ctx.shadowColor = theme.glowColor;
-        ctx.shadowBlur = 20;
-      }
-      ctx.stroke();
-      ctx.restore();
-
-      const pad = 26;
-
-      ctx.save();
-      ctx.font = "800 30px sans-serif";
-      ctx.fillStyle = theme.primary;
-      if (theme.sparkle) {
-        ctx.shadowColor = theme.glowColor;
-        ctx.shadowBlur = 14;
-      }
-      ctx.fillText(rankTitle || `T${rank.toLocaleString()} ボーダー`, x + pad, y + 54);
-      ctx.restore();
-
-      const badgeW = 136;
-      const badgeH = 40;
-      const badgeX = x + w - pad - badgeW;
-      const badgeY = y + 23;
-
-      ctx.save();
-      drawRoundRect(ctx, badgeX, badgeY, badgeW, badgeH, 10);
-      ctx.fillStyle = "rgba(255, 255, 255, 0.11)";
-      ctx.fill();
-      ctx.lineWidth = 2.2;
-      ctx.strokeStyle = borderGrad;
-      ctx.stroke();
-      ctx.fillStyle = theme.primary;
-      ctx.font = "800 20px monospace";
-      ctx.textAlign = "center";
-      ctx.fillText(`T${rank.toLocaleString()}`, badgeX + badgeW / 2, badgeY + 27);
-      ctx.restore();
-
-      if (!pred) {
-        ctx.fillStyle = "rgba(255, 255, 255, 0.65)";
-        ctx.font = "600 17px sans-serif";
-        ctx.fillText("このイベント・順位のJSONデータが未取得です。", x + pad, y + 120);
-        ctx.fillText("上のボタンからAPIデータをコピーしてください。", x + pad, y + 152);
-        return;
-      }
-
-      const heroX = x + pad;
-      const heroY = y + 78;
-      const heroW = w - pad * 2;
-      const heroH = 122;
-      ctx.save();
-      drawRoundRect(ctx, heroX, heroY, heroW, heroH, 12);
-      ctx.fillStyle = "rgba(0, 0, 0, 0.36)";
-      ctx.fill();
-      ctx.lineWidth = 1.2;
-      ctx.strokeStyle = "rgba(255, 255, 255, 0.16)";
-      ctx.stroke();
-      ctx.restore();
-
-      ctx.fillStyle = "rgba(255, 255, 255, 0.74)";
-      ctx.font = "700 15px sans-serif";
-      ctx.fillText(pred.isFinished ? "最終確定ボーダー" : "最終着地予測ボーダー（本命）", heroX + 18, heroY + 28);
-
-      ctx.save();
-      ctx.font = "800 44px monospace";
-      if (theme.rainbow) {
-        const txtGrad = ctx.createLinearGradient(heroX + 18, 0, heroX + 380, 0);
-        txtGrad.addColorStop(0, "#ff758f");
-        txtGrad.addColorStop(0.35, "#ffd166");
-        txtGrad.addColorStop(0.7, "#06d6a0");
-        txtGrad.addColorStop(1, "#60a5fa");
-        ctx.fillStyle = txtGrad;
-      } else {
-        ctx.fillStyle = theme.forecast;
-      }
-      if (theme.sparkle) {
-        ctx.shadowColor = theme.glowColor;
-        ctx.shadowBlur = 16;
-      }
-      ctx.fillText(`${formatNumber(pred.centralFinal)} pt`, heroX + 18, heroY + 76);
-      ctx.restore();
-
-      if (!pred.isFinished) {
-        ctx.fillStyle = theme.accent;
-        ctx.font = "700 16px monospace";
-        ctx.fillText(
-          `誤差目安: ±${formatNumber(pred.halfSpread)} pt  (${formatNumber(pred.minFinal)} 〜 ${formatNumber(pred.maxFinal)})`,
-          heroX + 18,
-          heroY + 106
-        );
-      } else {
-        ctx.fillStyle = theme.accent;
-        ctx.font = "700 16px sans-serif";
-        ctx.fillText("イベント終了・確定スコア", heroX + 18, heroY + 106);
-      }
-
-      const gridY = heroY + heroH + 14;
-      const colW = (w - pad * 2 - 14) / 2;
-      const cellH = 44;
-      const subCells = [
-        { k: "現在スコア", v: `${formatNumber(pred.currentScore)} pt`, cx: x + pad, cy: gridY },
-        {
-          k: "経過 / 進捗",
-          v: `${pred.elapsedH.toFixed(1)}h / ${pred.totalH.toFixed(0)}h (${(pred.pCur * 100).toFixed(1)}%)`,
-          cx: x + pad + colW + 14,
-          cy: gridY,
-        },
-        { k: "直近時速", v: `${formatNumber(pred.recentPace)} pt/h`, cx: x + pad, cy: gridY + cellH + 8 },
-        {
-          k: "残り予測増分",
-          v: pred.isFinished ? "0 pt" : `+${formatNumber(Math.max(0, pred.centralFinal - pred.currentScore))} pt`,
-          cx: x + pad + colW + 14,
-          cy: gridY + cellH + 8,
-        },
-      ];
-
-      for (const cell of subCells) {
-        ctx.save();
-        drawRoundRect(ctx, cell.cx, cell.cy, colW, cellH, 8);
-        ctx.fillStyle = "rgba(255, 255, 255, 0.06)";
-        ctx.fill();
-        ctx.restore();
-
-        ctx.fillStyle = "rgba(255, 255, 255, 0.64)";
-        ctx.font = "600 14px sans-serif";
-        ctx.fillText(cell.k, cell.cx + 12, cell.cy + 27);
-
-        ctx.fillStyle = "#ffffff";
-        ctx.font = "700 15px monospace";
-        ctx.textAlign = "right";
-        ctx.fillText(cell.v, cell.cx + colW - 12, cell.cy + 27);
-        ctx.textAlign = "left";
-      }
-
-      const topSplitY = gridY + cellH * 2 + 20;
-      ctx.strokeStyle = "rgba(255, 255, 255, 0.16)";
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(x + pad, topSplitY);
-      ctx.lineTo(x + w - pad, topSplitY);
-      ctx.stroke();
-
-      const gBoxX = x + pad;
-      const gBoxY = topSplitY + 10;
-      const gBoxW = w - pad * 2;
-      const gBoxH = y + h - 20 - gBoxY;
-
-      ctx.save();
-      drawRoundRect(ctx, gBoxX, gBoxY, gBoxW, gBoxH, 12);
-      ctx.fillStyle = "rgba(0, 0, 0, 0.36)";
-      ctx.fill();
-      ctx.lineWidth = 1.2;
-      ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
-      ctx.stroke();
-      ctx.restore();
-
-      ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
-      ctx.font = "700 15px sans-serif";
-      ctx.fillText("推移実績 & 着地予測レンジ", gBoxX + 16, gBoxY + 26);
-
-      ctx.fillStyle = "rgba(255, 255, 255, 0.58)";
-      ctx.font = "600 13px monospace";
-      ctx.textAlign = "right";
-      ctx.fillText(`基準: ${formatJST(pred.lastT)}`, gBoxX + gBoxW - 16, gBoxY + 26);
-      ctx.textAlign = "left";
-
-      const gPadL = 68, gPadR = 18, gPadT = 40, gPadB = 32;
-      const plotX = gBoxX + gPadL;
-      const plotY = gBoxY + gPadT;
-      const plotW = gBoxW - gPadL - gPadR;
-      const plotH = gBoxH - gPadT - gPadB;
-
-      let maxY = Math.max(pred.maxFinal, pred.currentScore);
-      for (const m of pred.refModels.slice(0, 3)) maxY = Math.max(maxY, m.hFinal);
-      maxY = Math.ceil((maxY * 1.06) / 100000) * 100000 || 500000;
-
-      const xOf = (p) => plotX + Math.max(0, Math.min(1, p)) * plotW;
-      const yOf = (v) => plotY + plotH - (Math.max(0, v) / maxY) * plotH;
-
-      ctx.font = "600 13px monospace";
-      ctx.textAlign = "right";
-      for (let i = 0; i <= 4; i++) {
-        const val = (maxY * i) / 4;
-        const gy = yOf(val);
-        ctx.strokeStyle = "rgba(255, 255, 255, 0.10)";
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(plotX, gy);
-        ctx.lineTo(plotX + plotW, gy);
-        ctx.stroke();
-
-        ctx.fillStyle = "rgba(255, 255, 255, 0.68)";
-        const lbl = val >= 10000 ? `${(val / 10000).toFixed(0)}万` : formatNumber(val);
-        ctx.fillText(lbl, plotX - 10, gy + 4);
-      }
-
-      ctx.textAlign = "center";
-      const stepH = pred.totalH <= 48 ? 12 : 24;
-      for (let hr = 0; hr <= pred.totalH; hr += stepH) {
-        const gx = xOf(hr / pred.totalH);
-        ctx.strokeStyle = "rgba(255, 255, 255, 0.07)";
-        ctx.beginPath();
-        ctx.moveTo(gx, plotY);
-        ctx.lineTo(gx, plotY + plotH);
-        ctx.stroke();
-
-        ctx.fillStyle = "rgba(255, 255, 255, 0.68)";
-        ctx.fillText(`${hr}h`, gx, plotY + plotH + 20);
-      }
-      ctx.textAlign = "left";
-
-      pred.refModels.slice(0, 2).forEach((m) => {
-        const g = m.graph;
-        const dur = g.endTime - g.startTime;
-        ctx.save();
-        ctx.strokeStyle = "rgba(255, 255, 255, 0.22)";
-        ctx.lineWidth = 1.4;
-        ctx.beginPath();
-        const step = Math.max(1, Math.floor(g.tier.length / 120));
-        for (let i = 0; i < g.tier.length; i += step) {
-          const [t, v] = g.tier[i];
-          const px = xOf((t - g.startTime) / dur);
-          const py = yOf(v);
-          if (i === 0) ctx.moveTo(px, py);
-          else ctx.lineTo(px, py);
-        }
-        ctx.stroke();
-        ctx.restore();
-      });
-
-      if (!pred.isFinished && pred.forecastSeries.length > 1) {
-        ctx.save();
-        ctx.fillStyle = theme.bandFill;
-        ctx.beginPath();
-        pred.forecastSeries.forEach((pt, i) => {
-          const px = xOf(pt.p);
-          const py = yOf(pt.max);
-          if (i === 0) ctx.moveTo(px, py);
-          else ctx.lineTo(px, py);
-        });
-        for (let i = pred.forecastSeries.length - 1; i >= 0; i--) {
-          const pt = pred.forecastSeries[i];
-          ctx.lineTo(xOf(pt.p), yOf(pt.min));
-        }
-        ctx.closePath();
-        ctx.fill();
-
-        ctx.setLineDash([7, 5]);
-        ctx.lineWidth = 3.2;
-        ctx.strokeStyle = theme.forecast;
-        if (theme.sparkle) {
-          ctx.shadowColor = theme.glowColor;
-          ctx.shadowBlur = 10;
-        }
-        ctx.beginPath();
-        pred.forecastSeries.forEach((pt, i) => {
-          const px = xOf(pt.p);
-          const py = yOf(pt.central);
-          if (i === 0) ctx.moveTo(px, py);
-          else ctx.lineTo(px, py);
-        });
-        ctx.stroke();
-        ctx.restore();
-      }
-
-      const tPts = pred.targetGraph.tier;
-      const tDur = pred.targetGraph.endTime - pred.targetGraph.startTime;
-      ctx.save();
-      if (theme.rainbow) {
-        const lineGrad = ctx.createLinearGradient(plotX, 0, plotX + plotW, 0);
-        lineGrad.addColorStop(0, "#ff4d6d");
-        lineGrad.addColorStop(0.3, "#ffb703");
-        lineGrad.addColorStop(0.6, "#06d6a0");
-        lineGrad.addColorStop(1, "#3a86ff");
-        ctx.strokeStyle = lineGrad;
-      } else {
-        ctx.strokeStyle = theme.accent;
-      }
-      ctx.lineWidth = 3.8;
-      if (theme.sparkle) {
-        ctx.shadowColor = theme.glowColor;
-        ctx.shadowBlur = 12;
-      }
-      ctx.beginPath();
-      const step = Math.max(1, Math.floor(tPts.length / 180));
-      for (let i = 0; i < tPts.length; i += step) {
-        const [t, v] = tPts[i];
-        const px = xOf((t - pred.targetGraph.startTime) / tDur);
-        const py = yOf(v);
-        if (i === 0) ctx.moveTo(px, py);
-        else ctx.lineTo(px, py);
-      }
-      const [lt, lv] = tPts[tPts.length - 1];
-      const lx = xOf((lt - pred.targetGraph.startTime) / tDur);
-      const ly = yOf(lv);
-      ctx.lineTo(lx, ly);
-      ctx.stroke();
-
-      ctx.fillStyle = "#ffffff";
-      ctx.beginPath();
-      ctx.arc(lx, ly, 5.5, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-
-      const endY = yOf(pred.centralFinal);
-      ctx.save();
-      ctx.fillStyle = theme.forecast;
-      ctx.beginPath();
-      ctx.arc(xOf(1), endY, 5.5, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-    }
-
-    // =========================================================================
-    // 7. UI 描画・コントロール制御・一斉配信
-    // =========================================================================
-    function renderAllUI() {
-      const evSel = document.getElementById("targetEventSelect");
-      evSel.innerHTML = "";
-      for (const item of state.eligibleItems) {
-        const opt = document.createElement("option");
-        opt.value = item.key;
-        opt.textContent = item.label;
-        evSel.appendChild(opt);
-      }
-      if (state.selectedKey) evSel.value = state.selectedKey;
-
-      const ranks = [];
-      for (const k of state.graphCache.keys()) {
-        if (k.startsWith(`${state.selectedKey}::`)) {
-          ranks.push(Number(k.split("::").pop()));
-        }
-      }
-      document.getElementById("cachedRanksInfo").textContent =
-        ranks.length > 0
-          ? `選択中イベントの取得済み順位: ${ranks.sort((a, b) => a - b).map((r) => "T" + r.toLocaleString()).join(", ")}`
-          : "選択中イベントのグラフデータはまだ取得されていません。";
-
-      renderSlotEditor();
-      renderManualAdjustPanel();
-      updateTextPreviews();
-      renderActiveCanvas();
-    }
-
-    function getEventAdjustMap(eventKey) {
-      if (!eventKey) return {};
-      if (!state.manualAdjustments[eventKey]) state.manualAdjustments[eventKey] = {};
-      return state.manualAdjustments[eventKey];
-    }
-
-    function stepManualAdjust(rank, deltaMan, ev) {
-      if (!state.selectedKey) return;
-      const mult = ev && ev.shiftKey ? 5 : 1;
-      const map = getEventAdjustMap(state.selectedKey);
-      const curPt = Number(map[rank]) || 0;
-      map[rank] = curPt + deltaMan * mult * 10000;
-      renderAllUI();
-    }
-
-    function setManualAdjustMan(rank, valStr) {
-      if (!state.selectedKey) return;
-      const man = Number(valStr);
-      const map = getEventAdjustMap(state.selectedKey);
-      map[rank] = Number.isFinite(man) ? Math.round(man / 5) * 5 * 10000 : 0;
-      renderAllUI();
-    }
-
-    function resetManualAdjust(rank) {
-      if (!state.selectedKey) return;
-      const map = getEventAdjustMap(state.selectedKey);
-      map[rank] = 0;
-      renderAllUI();
-    }
-
-    function resetAllManualAdjust() {
-      if (!state.selectedKey) return;
-      state.manualAdjustments[state.selectedKey] = {};
-      renderAllUI();
-    }
-
-    function renderManualAdjustPanel() {
-      const container = document.getElementById("manualAdjustRows");
-      if (!container) return;
-      container.innerHTML = "";
-      const key = state.selectedKey;
-      const defs = [
-        { rank: 1000, label: "ドリーム級 (T1,000)" },
-        { rank: 5000, label: "ダイヤ級 (T5,000)" },
-        { rank: 10000, label: "プラチナ級 (T10,000)" },
-      ];
-      const map = getEventAdjustMap(key);
-
-      defs.forEach((d) => {
-        const adjPt = Number(map[d.rank]) || 0;
-        const adjMan = Math.round(adjPt / 10000);
-        const pred = key ? getPredictionFor(key, d.rank) : null;
-        const finalText = pred ? `${Math.round(pred.centralFinal / 10000).toLocaleString()}万 pt` : "未取得";
-
-        const card = document.createElement("div");
-        card.style.cssText = "padding:10px;background:#ffffff;border:1px solid #cbd5e1;border-radius:6px;";
-        card.innerHTML = `
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-            <strong style="font-size:13px;">${d.label}</strong>
-            <span style="font-size:12px;color:#1d4ed8;font-weight:700;">着地: ${finalText}</span>
-          </div>
-          <div style="display:flex;gap:6px;align-items:center;">
-            <button type="button" onclick="stepManualAdjust(${d.rank}, -5, event)" style="height:30px;padding:0 9px;font-weight:700;">-5万</button>
-            <input type="number" step="5" value="${adjMan}" onchange="setManualAdjustMan(${d.rank}, this.value)"
-              style="width:78px;height:30px;text-align:right;padding:0 6px;border:1px solid #cbd5e1;border-radius:4px;font-weight:700;" />
-            <span style="font-size:12px;">万</span>
-            <button type="button" onclick="stepManualAdjust(${d.rank}, 5, event)" style="height:30px;padding:0 9px;font-weight:700;">+5万</button>
-            <button type="button" onclick="resetManualAdjust(${d.rank})" style="margin-left:auto;height:30px;padding:0 8px;font-size:11px;">自動に戻す</button>
-          </div>
-        `;
-        container.appendChild(card);
-      });
-    }
-
-    function renderSlotEditor() {
-      const editor = document.getElementById("slotEditor");
-      editor.innerHTML = "";
-      const rankOptions = [100, 500, 1000, 5000, 10000, 50000, 100000, 200000];
-
-      const makeRankSelect = (val, onChange) => {
-        const s = document.createElement("select");
-        rankOptions.forEach((r) => {
-          const o = document.createElement("option");
-          o.value = r;
-          o.textContent = `T${r.toLocaleString()}`;
-          if (Number(val) === r) o.selected = true;
-          s.appendChild(o);
-        });
-        s.onchange = (e) => { onChange(Number(e.target.value)); renderActiveCanvas(); };
-        return s;
-      };
-
-      const makeEventSelect = (val, onChange) => {
-        const s = document.createElement("select");
-        state.eligibleItems.forEach((it) => {
-          const o = document.createElement("option");
-          o.value = it.key;
-          o.textContent = it.shortLabel;
-          if (val === it.key) o.selected = true;
-          s.appendChild(o);
-        });
-        s.onchange = (e) => { onChange(e.target.value); renderActiveCanvas(); };
-        return s;
-      };
-
-      if (state.mode === "single") {
-        const row = document.createElement("div");
-        row.className = "row";
-        row.append(
-          "表示対象: ",
-          makeEventSelect(state.single.key, (k) => (state.single.key = k)),
-          makeRankSelect(state.single.rank, (r) => (state.single.rank = r))
-        );
-        editor.appendChild(row);
-      } else if (state.mode === "dual") {
-        ["左枠", "右枠"].forEach((lbl, idx) => {
-          const row = document.createElement("div");
-          row.className = "row";
-          row.append(
-            `${lbl}: `,
-            makeEventSelect(state.dual[idx].key, (k) => (state.dual[idx].key = k)),
-            makeRankSelect(state.dual[idx].rank, (r) => (state.dual[idx].rank = r))
-          );
-          editor.appendChild(row);
-        });
-      } else {
-        ["左枠（標準: ドリーム級）", "中央枠（標準: ダイヤ級）", "右枠（標準: プラチナ級）"].forEach((lbl, idx) => {
-          const row = document.createElement("div");
-          row.className = "row";
-          row.append(
-            `${lbl}: `,
-            makeEventSelect(state.triple[idx].key, (k) => (state.triple[idx].key = k)),
-            makeRankSelect(state.triple[idx].rank, (r) => (state.triple[idx].rank = r))
-          );
-          editor.appendChild(row);
-        });
-      }
-    }
-
-    function onModeOrThemeChanged() {
-      state.mode = document.getElementById("modeSelect").value;
-      state.themeOverride = document.getElementById("themeSelect").value;
-      renderSlotEditor();
-      renderActiveCanvas();
-    }
-
-    document.getElementById("targetEventSelect").addEventListener("change", (e) => {
-      const newKey = e.target.value;
-      state.selectedKey = newKey;
-      state.single.key = newKey;
-      state.dual.forEach((s) => (s.key = newKey));
-      state.triple.forEach((s) => (s.key = newKey));
-      renderAllUI();
-    });
-
-    async function triggerBroadcast(shouldNotify = true) {
-      const confirmMsg = shouldNotify
-        ? "現在プレビュー中の内容で、購読登録されている全Discordチャンネルへ一斉通知を送信します。よろしいですか？"
-        : "現在プレビュー中のデータ・予測画像をサーバーキャッシュへ反映します（チャンネルへの通知は送信しません）。よろしいですか？";
-
-      if (!confirm(confirmMsg)) {
-        return;
-      }
-
-      const btnBroadcast = document.getElementById("broadcastBtn");
-      const btnDataOnly = document.getElementById("dataOnlyBtn");
-      btnBroadcast.disabled = true;
-      btnDataOnly.disabled = true;
-      if (shouldNotify) {
-        btnBroadcast.textContent = "送信中...";
-      } else {
-        btnDataOnly.textContent = "更新中...";
-      }
-
-      try {
-        const canvas = document.getElementById("reportCanvas");
-        const { blob, filename } = await canvasToOptimizedBlob(canvas);
-
-        const respectMuteEl = document.getElementById("chkRespectMuteTime");
-
-        const formData = new FormData();
-        formData.append("nowBorderText", buildNowBorderText());
-        formData.append("customText", document.getElementById("customTextInput").value.trim());
-        formData.append("customTextPosition", document.getElementById("customTextPosSelect").value);
-        formData.append("notify", shouldNotify ? "true" : "false");
-        formData.append("respectMuteTime", respectMuteEl && respectMuteEl.checked ? "true" : "false");
-        formData.append("eventKey", state.selectedKey || "");
-        formData.append("manualAdjustments", JSON.stringify(state.manualAdjustments[state.selectedKey] || {}));
-        if (blob) {
-          formData.append("image", blob, filename);
-        }
-
-        const endpoint = shouldNotify ? "/api/admin/broadcast" : "/api/admin/update-cache";
-        const res = await apiFetch(endpoint, {
-          method: "POST",
-          body: formData,
-        });
-        const rawText = await res.text();
-        let data;
-        try {
-          data = JSON.parse(rawText);
-        } catch (_) {
-          throw new Error(`サーバーから予期しない応答が返りました (HTTP ${res.status})`);
-        }
-
-        if (data.ok) {
-          showToast(data.message);
-        } else {
-          alert("エラー: " + (data.error || "不明なエラー"));
-        }
-      } catch (err) {
-        alert("通信エラー: " + err.message);
-      } finally {
-        btnBroadcast.disabled = false;
-        btnDataOnly.disabled = false;
-        btnBroadcast.textContent = "🚀 Botに反映（登録チャンネルへ一斉通知）";
-        btnDataOnly.textContent = "🔄 データのみ更新（通知は送信しない）";
-      }
-    }
-
-    if (adminPassword) {
-      document.getElementById("loginOverlay").style.display = "none";
-      initializeApp();
-    }
+    })();
   </script>
 </body>
 </html>
