@@ -505,7 +505,7 @@ function rebuildNowBorderCacheFromGraphs(targetPrefix = null) {
 }
 
 // =========================================================================
-// 5. サーバーサイド着地予測モデル（v5 キャリブレーション版・1分/10分両対応）
+// 5. サーバーサイド着地予測モデル（v6 状況適応型・動的ベースライン版）
 // =========================================================================
 function calcMedian(values) {
   if (!values || values.length === 0) return 1.0;
@@ -541,139 +541,239 @@ function interpScoreAtProgress(graph, prog) {
   return interpScoreAtTime(graph, targetT);
 }
 
+function getJstParts(ms) {
+  const jst = new Date(ms + 9 * 3600 * 1000);
+  const year = jst.getUTCFullYear();
+  const month = jst.getUTCMonth() + 1;
+  const day = jst.getUTCDate();
+  const dow = jst.getUTCDay();
+  const hour = jst.getUTCHours();
+  const minute = jst.getUTCMinutes();
+  const slot30 = hour * 2 + (minute >= 30 ? 1 : 0);
+  return { year, month, day, dow, hour, minute, slot30 };
+}
+
 function getJstHour(ms) {
-  return new Date(ms + 9 * 3600 * 1000).getUTCHours();
+  return getJstParts(ms).hour;
 }
 
 function getJstDayOfWeek(ms) {
-  return new Date(ms + 9 * 3600 * 1000).getUTCDay();
+  return getJstParts(ms).dow;
 }
 
-function getJstHourActivityFactor(ms) {
-  const h = getJstHour(ms);
-  const table = [
-    0.55, 0.35, 0.22, 0.16, 0.15, 0.20,
-    0.35, 0.55, 0.65, 0.65, 0.70, 0.75,
-    0.85, 0.80, 0.80, 0.85, 0.90, 1.00,
-    1.10, 1.20, 1.35, 1.40, 1.25, 0.90,
-  ];
-  return table[h] || 1.0;
-}
-
-function getWindowAvgJstActivity(graph, endT, winMs) {
-  const st = graph.startTime;
-  const actualWin = Math.max(60000, Math.min(winMs, endT - st));
-  let sum = 0;
-  for (let k = 0; k <= 4; k++) {
-    sum += getJstHourActivityFactor(endT - actualWin * (k / 4));
+// 日本の祝日判定（JST基準・固定祝日/ハッピーマンデー/春分秋分/振替休日/国民の休日）
+const _jpHolidayCache = new Map();
+function isSingleDayHolidayJST(y, m, d, dow) {
+  const nthMonday = (targetM, n) => {
+    const firstDow = new Date(Date.UTC(y, targetM - 1, 1)).getUTCDay();
+    const firstMon = 1 + ((8 - firstDow) % 7);
+    return firstMon + (n - 1) * 7;
+  };
+  if (m === 1 && d === 1) return true; // 元日
+  if (m === 1 && d === nthMonday(1, 2)) return true; // 成人の日
+  if (m === 2 && d === 11) return true; // 建国記念の日
+  if (m === 2 && d === 23) return true; // 天皇誕生日
+  if (m === 3) {
+    const vernal = Math.floor(20.8431 + 0.242194 * (y - 1980) - Math.floor((y - 1980) / 4));
+    if (d === vernal) return true; // 春分の日
   }
-  return Math.max(0.20, sum / 5);
+  if (m === 4 && d === 29) return true; // 昭和の日
+  if (m === 5 && (d === 3 || d === 4 || d === 5)) return true; // 憲法記念日・みどりの日・こどもの日
+  if (m === 7 && d === nthMonday(7, 3)) return true; // 海の日
+  if (m === 8 && d === 11) return true; // 山の日
+  if (m === 9 && d === nthMonday(9, 3)) return true; // 敬老の日
+  if (m === 9) {
+    const autumnal = Math.floor(23.2488 + 0.242194 * (y - 1980) - Math.floor((y - 1980) / 4));
+    if (d === autumnal) return true; // 秋分の日
+  }
+  if (m === 10 && d === nthMonday(10, 2)) return true; // スポーツの日
+  if (m === 11 && (d === 3 || d === 23)) return true; // 文化の日・勤労感謝の日
+  return false;
 }
 
-function getChapterFatigueFactor(item) {
+function isJapaneseHolidayJST(ms) {
+  const { year, month, day, dow } = getJstParts(ms);
+  const key = `${year}-${month}-${day}`;
+  if (_jpHolidayCache.has(key)) return _jpHolidayCache.get(key);
+
+  const checkDirect = (tMs) => {
+    const p = getJstParts(tMs);
+    return isSingleDayHolidayJST(p.year, p.month, p.day, p.dow);
+  };
+
+  let isHol = checkDirect(ms);
+  // 振替休日（日曜が祝日の場合、その後の最初の平日）
+  if (!isHol && dow !== 0) {
+    for (let back = 1; back <= 3; back++) {
+      const prevMs = ms - back * 86400000;
+      const pp = getJstParts(prevMs);
+      if (!checkDirect(prevMs)) break;
+      if (pp.dow === 0) {
+        isHol = true;
+        break;
+      }
+    }
+  }
+  // 国民の休日（前日と翌日が祝日）
+  if (!isHol && checkDirect(ms - 86400000) && checkDirect(ms + 86400000)) {
+    isHol = true;
+  }
+
+  _jpHolidayCache.set(key, isHol);
+  return isHol;
+}
+
+// 30分スロット（48枠）のデフォルト基礎活性係数（平日 / 休日・祝日）
+function getDefaultSlot30Factor(slot30, isWeekendOrHoliday) {
+  const h = Math.floor(slot30 / 2);
+  const isHalf = slot30 % 2 === 1;
+  const weekday24 = [
+    0.58, 0.36, 0.22, 0.16, 0.15, 0.20,
+    0.34, 0.52, 0.62, 0.62, 0.66, 0.72,
+    0.84, 0.78, 0.78, 0.84, 0.92, 1.05,
+    1.18, 1.30, 1.44, 1.48, 1.32, 0.94,
+  ];
+  const holiday24 = [
+    0.66, 0.44, 0.28, 0.20, 0.18, 0.22,
+    0.34, 0.48, 0.64, 0.78, 0.90, 0.98,
+    1.05, 1.08, 1.12, 1.16, 1.22, 1.28,
+    1.34, 1.42, 1.50, 1.52, 1.36, 0.98,
+  ];
+  const tbl = isWeekendOrHoliday ? holiday24 : weekday24;
+  const cur = tbl[h] || 1.0;
+  const next = tbl[(h + 1) % 24] || cur;
+  return isHalf ? (cur + next) * 0.5 : cur;
+}
+
+// 過去データ（36ファイル群）から「曜日 × 祝日 × 30分スロット」の速度係数を自動学習
+function buildCalendarProfileFromRefs(refGraphs) {
+  const buckets = new Map(); // `${effDow}_${slot30}` -> number[]
+  const stepMs = 30 * 60 * 1000;
+
+  for (const g of refGraphs) {
+    if (!g || !Array.isArray(g.tier) || g.tier.length < 10) continue;
+    const durH = (g.endTime - g.startTime) / 3600000;
+    const finalScore = g.tier[g.tier.length - 1][1];
+    const avgPace = finalScore / Math.max(1, durH);
+    if (avgPace <= 0) continue;
+
+    // 開始直後1hと終了直前3hの特殊スパートを除いた定常区間から時間帯係数を抽出
+    const scanStart = g.startTime + 60 * 60 * 1000;
+    const scanEnd = g.endTime - 3 * 60 * 60 * 1000;
+    for (let t = scanStart; t + stepMs <= scanEnd; t += stepMs) {
+      const s0 = interpScoreAtTime(g, t);
+      const s1 = interpScoreAtTime(g, t + stepMs);
+      if (s0 == null || s1 == null) continue;
+      const slotPace = ((s1 - s0) / 0.5);
+      const ratio = Math.max(0.10, Math.min(3.50, slotPace / avgPace));
+
+      const midMs = t + stepMs * 0.5;
+      const { dow, slot30 } = getJstParts(midMs);
+      const isHol = isJapaneseHolidayJST(midMs);
+      const effDow = isHol ? 0 : dow; // 祝日は日曜相当（休日）プロファイルに統合
+      const bKey = `${effDow}_${slot30}`;
+      if (!buckets.has(bKey)) buckets.set(bKey, []);
+      buckets.get(bKey).push(ratio);
+    }
+  }
+
+  return function getCalendarSlotFactor(ms) {
+    const { dow, slot30 } = getJstParts(ms);
+    const isHol = isJapaneseHolidayJST(ms);
+    const isWeekendOrHoliday = isHol || dow === 0 || dow === 6;
+    const defaultVal = getDefaultSlot30Factor(slot30, isWeekendOrHoliday);
+
+    const effDow = isHol ? 0 : dow;
+    const samples = buckets.get(`${effDow}_${slot30}`) || [];
+    if (samples.length === 0) return defaultVal;
+
+    const learnedMed = calcMedian(samples);
+    // サンプル数に応じてデフォルトと平滑ブレンド（6件以上で75%実測反映）
+    const trust = Math.min(0.75, samples.length / 8);
+    return defaultVal * (1 - trust) + learnedMed * trust;
+  };
+}
+
+// EMA（指数移動平均）で30分速・10分速を取得
+function computeEmaPace(graph, lastT, slotMin, numSlots = 4, alpha = 0.52) {
+  const st = graph.startTime;
+  const slotMs = slotMin * 60 * 1000;
+  const elapsedMs = lastT - st;
+  if (elapsedMs <= 60000) return 0;
+
+  const actualSlots = Math.max(1, Math.min(numSlots, Math.floor(elapsedMs / slotMs)));
+  const paces = [];
+  for (let i = actualSlots; i >= 1; i--) {
+    const t1 = lastT - (i - 1) * slotMs;
+    const t0 = Math.max(st, lastT - i * slotMs);
+    const dtH = (t1 - t0) / 3600000;
+    if (dtH <= 0) continue;
+    const v1 = interpScoreAtTime(graph, t1);
+    const v0 = interpScoreAtTime(graph, t0);
+    paces.push(Math.max(0, (v1 - v0) / dtH));
+  }
+  if (paces.length === 0) return 0;
+  let ema = paces[0];
+  for (let i = 1; i < paces.length; i++) {
+    ema = alpha * paces[i] + (1 - alpha) * ema;
+  }
+  return ema;
+}
+
+// 開始から現在までの「伸び方（カーブ形状）」の類似度を算出（0.15 〜 1.0）
+function calcTrajectoryShapeSimilarity(targetGraph, refGraph, pCur) {
+  const tSt = targetGraph.startTime;
+  const tDur = targetGraph.endTime - tSt;
+  const rSt = refGraph.startTime;
+  const rDur = refGraph.endTime - rSt;
+
+  const tCurVal = interpScoreAtProgress(targetGraph, pCur);
+  const rCurVal = interpScoreAtProgress(refGraph, pCur);
+  if (!tCurVal || tCurVal <= 0 || !rCurVal || rCurVal <= 0) return 0.5;
+
+  const bins = Math.max(4, Math.min(24, Math.round(pCur * 48)));
+  const vecT = [];
+  const vecR = [];
+  let prevT = 0;
+  let prevR = 0;
+
+  for (let i = 1; i <= bins; i++) {
+    const p = (pCur * i) / bins;
+    const curT = interpScoreAtTime(targetGraph, tSt + p * tDur);
+    const curR = interpScoreAtTime(refGraph, rSt + p * rDur);
+    vecT.push(Math.max(0, curT - prevT) / tCurVal);
+    vecR.push(Math.max(0, curR - prevR) / rCurVal);
+    prevT = curT;
+    prevR = curR;
+  }
+
+  let dot = 0, normT = 0, normR = 0;
+  for (let i = 0; i < bins; i++) {
+    dot += vecT[i] * vecR[i];
+    normT += vecT[i] * vecT[i];
+    normR += vecR[i] * vecR[i];
+  }
+  const cosSim = normT > 0 && normR > 0 ? dot / Math.sqrt(normT * normR) : 0.5;
+
+  // 前半半分 vs 後半半分の傾き比（加速型か減速型か）の一致度
+  const halfIdx = Math.floor(bins / 2);
+  const tFirst = vecT.slice(0, halfIdx).reduce((a, b) => a + b, 0);
+  const tSecond = vecT.slice(halfIdx).reduce((a, b) => a + b, 0);
+  const rFirst = vecR.slice(0, halfIdx).reduce((a, b) => a + b, 0);
+  const rSecond = vecR.slice(halfIdx).reduce((a, b) => a + b, 0);
+
+  const tSlope = (tSecond + 0.05) / (tFirst + 0.05);
+  const rSlope = (rSecond + 0.05) / (rFirst + 0.05);
+  const slopeRatio = Math.min(tSlope, rSlope) / Math.max(tSlope, rSlope);
+
+  const combined = Math.pow(Math.max(0, cosSim), 2.0) * (0.4 + 0.6 * slopeRatio);
+  return Math.max(0.15, Math.min(1.0, combined));
+}
+
+function getChapterNumber(item) {
   const rawId = `${item?.chapterId || ""} ${item?.key || ""}`;
   const m = /chapter[-_]?0*(\d+)/i.exec(rawId);
-  if (!m) return 1.0;
-  const ch = Number(m[1]);
-  if (ch <= 1) return 1.00;
-  if (ch === 2) return 0.99;
-  if (ch === 3) return 0.975;
-  return 0.955;
-}
-
-function getJstTimeZoneConfig(lastT, remH, pCur) {
-  const h = getJstHour(lastT);
-  let zone;
-  if (h >= 1 && h <= 4) {
-    zone = { label: "深夜停滞帯", winH: 6.0, wPace: 0.10, clampLo: 0.90, clampHi: 1.10 };
-  } else if (h >= 5 && h <= 8) {
-    zone = { label: "早朝・通勤帯", winH: 6.0, wPace: 0.15, clampLo: 0.88, clampHi: 1.12 };
-  } else if (h >= 9 && h <= 16) {
-    zone = { label: "日中巡航帯", winH: 3.0, wPace: 0.30, clampLo: 0.82, clampHi: 1.18 };
-  } else if (h >= 17 && h <= 22) {
-    zone = { label: "ゴールデン帯", winH: 2.0, wPace: 0.45, clampLo: 0.75, clampHi: 1.25 };
-  } else {
-    zone = { label: "深夜切替帯", winH: 3.0, wPace: 0.25, clampLo: 0.85, clampHi: 1.15 };
-  }
-
-  if (remH <= 2.0) {
-    return { label: "最終追い込み(残2h内)", winH: 0.75, wPace: 0.80, clampLo: 0.70, clampHi: 1.65 };
-  }
-  if (remH <= 4.0) {
-    return { label: "スパート加速(残4h内)", winH: 1.25, wPace: 0.65, clampLo: 0.75, clampHi: 1.55 };
-  }
-  if (remH <= 6.0) {
-    return { label: "終盤スパート域(残6h内)", winH: 1.75, wPace: Math.max(zone.wPace, 0.52), clampLo: 0.78, clampHi: 1.45 };
-  }
-  if (pCur < 0.35) {
-    const earlyBoost = 0.22 * (1.0 - pCur / 0.35);
-    zone.wPace = Math.min(0.55, zone.wPace + earlyBoost);
-  }
-  return zone;
-}
-
-function calcHistoricalPaceLimit(targetGraph, eraAdjustedRefs, currentScore, elapsedMs, remH, recentPace) {
-  if (!eraAdjustedRefs || eraAdjustedRefs.length === 0 || remH <= 0) {
-    return Infinity;
-  }
-  const st = targetGraph.startTime;
-  const et = targetGraph.endTime;
-  const dur = et - st;
-  const pCur = Math.min(1, elapsedMs / dur);
-
-  let maxHistRemPace = 0;
-  for (const rObj of eraAdjustedRefs) {
-    const g = rObj.graph;
-    const gDur = g.endTime - g.startTime;
-    const gCur = interpScoreAtProgress(g, pCur) * rObj.eraScale;
-    const gFinal = g.tier[g.tier.length - 1][1] * rObj.eraScale;
-    const gRemH = Math.max(0.1, (1 - pCur) * (gDur / 3600000));
-    const gRemPace = Math.max(0, (gFinal - gCur) / gRemH);
-    if (gRemPace > maxHistRemPace) maxHistRemPace = gRemPace;
-  }
-  if (maxHistRemPace <= 0) return Infinity;
-
-  const checkpoints = [0.25, 0.50, 0.75, 1.0];
-  let sustainedRatios = [];
-  for (let i = 0; i < checkpoints.length; i++) {
-    const frac = checkpoints[i];
-    const prevFrac = i === 0 ? 0 : checkpoints[i - 1];
-    const t0 = st + elapsedMs * prevFrac;
-    const t1 = st + elapsedMs * frac;
-    const segH = (t1 - t0) / 3600000;
-    if (segH < 0.5) continue;
-
-    const s0 = interpScoreAtTime(targetGraph, t0);
-    const s1 = interpScoreAtTime(targetGraph, t1);
-    const curSegPace = (s1 - s0) / segH;
-
-    let maxHistSegPace = 0;
-    for (const rObj of eraAdjustedRefs) {
-      const g = rObj.graph;
-      const gDur = g.endTime - g.startTime;
-      const gp0 = ((t0 - st) / dur) * gDur + g.startTime;
-      const gp1 = ((t1 - st) / dur) * gDur + g.startTime;
-      const gs0 = interpScoreAtTime(g, gp0) * rObj.eraScale;
-      const gs1 = interpScoreAtTime(g, gp1) * rObj.eraScale;
-      const gSegH = Math.max(0.1, (gp1 - gp0) / 3600000);
-      const gSegPace = (gs1 - gs0) / gSegH;
-      if (gSegPace > maxHistSegPace) maxHistSegPace = gSegPace;
-    }
-    if (maxHistSegPace > 0) {
-      sustainedRatios.push(curSegPace / maxHistSegPace);
-    }
-  }
-
-  let capMultiplier = 1.10;
-  if (sustainedRatios.length >= 2) {
-    const minRatio = Math.min(...sustainedRatios);
-    const medRatio = calcMedian(sustainedRatios);
-    if (minRatio >= 0.95 && medRatio >= 1.00) {
-      capMultiplier = Math.min(1.30, Math.max(1.10, medRatio * 1.05));
-    }
-  }
-
-  return Math.max(recentPace * 1.05, maxHistRemPace * capMultiplier);
+  return m ? Number(m[1]) : null;
 }
 
 function applyNaturalManualAdjustment(pred, adjustPt) {
@@ -721,70 +821,12 @@ function computePredictionServer(targetItem, targetGraph, refPairs, targetRank, 
   const currentScore = lastPt[1];
   const elapsedMs = Math.max(60000, lastT - st);
   const elapsedH = elapsedMs / 3600000;
-  const remH = Math.max(0, (et - lastT) / 3600000);
+  const remMs = Math.max(0, et - lastT);
+  const remH = remMs / 3600000;
   const pCur = Math.min(1, elapsedMs / dur);
   const isFinished = pCur >= 0.998 && !targetItem.live;
 
-  const display1hMs = Math.min(3600 * 1000, Math.max(20 * 60 * 1000, elapsedMs * 0.12));
-  const sDisplayPrev = interpScoreAtTime(targetGraph, Math.max(st, lastT - display1hMs));
-  const recentPace = ((currentScore - sDisplayPrev) / display1hMs) * 3600000;
-
-  // 最終2時間以内用：直近10分速（pt/h換算）
-  const win10mMs = Math.min(elapsedMs * 0.5, 10 * 60 * 1000);
-  const s10mPrev = interpScoreAtTime(targetGraph, Math.max(st, lastT - win10mMs));
-  const pace10m = win10mMs > 0 ? ((currentScore - s10mPrev) / win10mMs) * 3600000 : recentPace;
-
-  // 残り時間に応じた10分速ブレンド重み（2.0h超は0%、2.0h→0.5hで35%→85%へ滑らかに移行）
-  let w10m = 0;
-  if (!isFinished && remH <= 2.0) {
-    if (remH > 1.0) {
-      w10m = 0.35 + (2.0 - remH) * 0.25; // 0.35 -> 0.60
-    } else if (remH > 0.5) {
-      w10m = 0.60 + (1.0 - remH) * 0.40; // 0.60 -> 0.80
-    } else {
-      w10m = 0.85;
-    }
-  }
-  const effectiveDisplayPace = w10m > 0 ? recentPace * (1 - w10m) + pace10m * w10m : recentPace;
-
-  const zoneCfg = getJstTimeZoneConfig(lastT, remH, pCur);
-  const zoneWinMs = Math.min(elapsedMs * 0.85, Math.max(20 * 60 * 1000, zoneCfg.winH * 3600 * 1000));
-  const sZonePrev = interpScoreAtTime(targetGraph, Math.max(st, lastT - zoneWinMs));
-  const zonePace = ((currentScore - sZonePrev) / zoneWinMs) * 3600000;
-  const curZoneAct = getWindowAvgJstActivity(targetGraph, lastT, zoneWinMs);
-  const normalizedCurPace = zonePace / curZoneAct;
-
-  const win6hMs = Math.min(elapsedMs, 6 * 3600 * 1000);
-  const pace6h = ((currentScore - interpScoreAtTime(targetGraph, Math.max(st, lastT - win6hMs))) / Math.max(1, win6hMs)) * 3600000;
-  let trendFactor = 1.0;
-  if (elapsedH >= 14.0) {
-    const tMid6 = lastT - 6 * 3600 * 1000;
-    const tPrev12 = Math.max(st, lastT - 12 * 3600 * 1000);
-    if (tMid6 - tPrev12 >= 3 * 3600 * 1000) {
-      const sMid6 = interpScoreAtTime(targetGraph, tMid6);
-      const sPrev12 = interpScoreAtTime(targetGraph, tPrev12);
-      const pLast6 = (currentScore - sMid6) / 6.0;
-      const pPrev6 = (sMid6 - sPrev12) / ((tMid6 - tPrev12) / 3600000);
-      const npLast6 = pLast6 / Math.max(0.2, getJstHourActivityFactor(lastT - 3 * 3600 * 1000));
-      const npPrev6 = pPrev6 / Math.max(0.2, getJstHourActivityFactor((tMid6 + tPrev12) * 0.5));
-      if (npPrev6 > 0) {
-        const ratioTrend = npLast6 / npPrev6;
-        if (ratioTrend < 0.96) {
-          trendFactor = Math.max(0.96, Math.min(1.0, 1.0 + (ratioTrend - 1.0) * 0.18));
-        }
-      }
-    }
-  }
-
-  let accelBoost = 1.0;
-  if (remH <= 6.0 && pace6h > 0 && effectiveDisplayPace > pace6h) {
-    const surgeRatio = effectiveDisplayPace / pace6h;
-    const rankGain = Number(targetRank) <= 1000 ? 0.22 : Number(targetRank) >= 10000 ? 0.18 : 0.04;
-    accelBoost = Math.min(1.24, 1.0 + (surgeRatio - 1.0) * rankGain);
-  }
-
-  const naiveLinear = pCur > 0.02 ? currentScore / pCur : currentScore;
-
+  // 有効な過去完了データの抽出
   const validRefs = refPairs
     .filter(({ graph }) => {
       if (!graph || !Array.isArray(graph.tier) || graph.tier.length < 15) return false;
@@ -795,305 +837,241 @@ function computePredictionServer(targetItem, targetGraph, refPairs, targetRank, 
     })
     .sort((a, b) => b.graph.endTime - a.graph.endTime);
 
-  let monthlyGrowthRate = 0.005;
-  if (validRefs.length >= 3) {
-    const refPts = validRefs.map((r) => {
-      const rDurH = (r.graph.endTime - r.graph.startTime) / 3600000;
-      const rFinal = r.graph.tier[r.graph.tier.length - 1][1];
-      return {
-        tMonths: (r.graph.startTime - st) / (30 * 24 * 3600 * 1000),
-        val: rFinal / Math.max(1, rDurH),
-      };
-    });
-    const meanT = refPts.reduce((a, b) => a + b.tMonths, 0) / refPts.length;
-    const meanV = refPts.reduce((a, b) => a + b.val, 0) / refPts.length;
-    let num = 0, den = 0;
-    for (const p of refPts) {
-      num += (p.tMonths - meanT) * (p.val - meanV);
-      den += Math.pow(p.tMonths - meanT, 2);
-    }
-    if (den > 0.05 && meanV > 0) {
-      monthlyGrowthRate = Math.max(0.0, Math.min(0.008, num / den / meanV));
+  // 過去ログから「曜日 × 祝日 × 30分スロット」速度係数を学習
+  const getCalFactor = buildCalendarProfileFromRefs(validRefs.map((r) => r.graph));
+
+  // 1. 常に30分速EMA、終了3時間前から10分速EMAへ移行
+  const ema30m = computeEmaPace(targetGraph, lastT, 30, 4, 0.52);
+  const ema10m = computeEmaPace(targetGraph, lastT, 10, 4, 0.58);
+
+  let w10m = 0;
+  if (!isFinished && remH <= 3.0) {
+    // 残り3.0h -> 2.0h で 0% -> 65%、残り2.0h以下で 65% -> 90%
+    w10m = remH > 2.0 ? (3.0 - remH) * 0.65 : Math.min(0.90, 0.65 + (2.0 - remH) * 0.125);
+  }
+  const activeEmaPace = w10m > 0 ? ema30m * (1 - w10m) + ema10m * w10m : ema30m;
+  const curCalFactor = Math.max(0.18, getCalFactor(lastT - 15 * 60 * 1000));
+  const normalizedEmaPace = activeEmaPace / curCalFactor;
+
+  // 2. 残り時間スロット列の構築（ラスト3h前までは30分刻み、ラスト3h〜終了は10分刻み）
+  const futureSlots = [];
+  if (!isFinished && remMs > 0) {
+    const final3hStart = et - 3 * 3600 * 1000;
+    let cursor = lastT;
+    while (cursor < et - 1000) {
+      const slotMs = cursor >= final3hStart ? 10 * 60 * 1000 : 30 * 60 * 1000;
+      const nextT = Math.min(et, cursor + slotMs);
+      const midT = (cursor + nextT) * 0.5;
+      futureSlots.push({
+        t0: cursor,
+        t1: nextT,
+        p0: (cursor - st) / dur,
+        p1: (nextT - st) / dur,
+        pMid: (midT - st) / dur,
+        dtH: (nextT - cursor) / 3600000,
+        remHMid: (et - midT) / 3600000,
+        calFactor: getCalFactor(midT),
+        is10mZone: cursor >= final3hStart,
+      });
+      cursor = nextT;
     }
   }
 
-  const eraAdjustedRefs = validRefs.map((r) => {
-    const monthsAgo = (st - r.graph.startTime) / (30 * 24 * 3600 * 1000);
-    const eraScale = Math.max(0.95, Math.min(1.05, 1.0 + monthlyGrowthRate * monthsAgo));
-    return {
-      ...r,
-      monthsAgo,
-      eraScale,
-      adjFinal: r.graph.tier[r.graph.tier.length - 1][1] * eraScale,
-    };
-  });
-
-  const targetEndHour = getJstHour(et);
-  const targetEndDay = getJstDayOfWeek(et);
-  const targetStartDay = getJstDayOfWeek(st);
-  const weekendEndFactor = targetEndDay === 0 && targetEndHour >= 17 ? 1.015 : 1.0;
-
-  let resourceFactor = 1.0;
-  if (Array.isArray(memStore.events) && memStore.events.length > 0) {
-    const priorEvents = memStore.events
-      .filter((ev) => ev.endTime && ev.endTime <= st + 3600000 && ev.eventId !== targetItem.eventId)
-      .sort((a, b) => b.endTime - a.endTime);
-
-    if (priorEvents.length > 0) {
-      const prevEv = priorEvents[0];
-      const prevName = prevEv.name || "";
-      if (prevEv.isSongScore === true || prevName.includes("スコア")) {
-        resourceFactor *= 1.02;
-      }
-    }
-  }
-
-  if (eraAdjustedRefs.length >= 3) {
-    const medAdjFinal = calcMedian(eraAdjustedRefs.map((r) => r.adjFinal));
-    const prevSameCat = eraAdjustedRefs.find(
-      (r) => r.graph.endTime <= st + 3600000 && st - r.graph.endTime < 7 * 24 * 3600 * 1000
-    );
-    if (prevSameCat && medAdjFinal > 0) {
-      const prevHeatRatio = prevSameCat.adjFinal / medAdjFinal;
-      if (prevHeatRatio > 1.15) {
-        const rebound = Math.max(0.90, Math.min(1.0, 1.0 - (prevHeatRatio - 1.0) * 0.10));
-        resourceFactor *= rebound;
-      }
-    }
-  }
-
-  const rawFatigue = getChapterFatigueFactor(targetItem);
-  const targetFatigue = remH <= 6.0 ? 1.0 - (1.0 - rawFatigue) * 0.45 : rawFatigue;
-  const wPaceWeight = zoneCfg.wPace;
-  const wLevelWeight = 1.0 - wPaceWeight;
-
+  // 3. 伸び方（形状）類似度に基づく参照イベントの重み付けと個別予測カーブ生成
+  const targetChNum = getChapterNumber(targetItem);
+  const rankNum = Number(targetRank);
+  const refModels = [];
   const rNows = [];
   const rPaces = [];
-  const refCalcs = [];
 
-  for (const rObj of eraAdjustedRefs) {
-    const { item, graph, monthsAgo, eraScale } = rObj;
-    const gDur = graph.endTime - graph.startTime;
-    const rawHCur = interpScoreAtProgress(graph, pCur);
-    const rawHFinal = graph.tier[graph.tier.length - 1][1];
-    if (!rawHCur || rawHCur <= 0 || rawHFinal <= rawHCur) continue;
+  for (const rObj of validRefs) {
+    const { item, graph } = rObj;
+    const gSt = graph.startTime;
+    const gDur = graph.endTime - gSt;
+    const hCur = interpScoreAtProgress(graph, pCur);
+    const hFinal = graph.tier[graph.tier.length - 1][1];
+    if (!hCur || hCur <= 0 || hFinal <= hCur) continue;
 
-    const hCur = rawHCur * eraScale;
-    const hFinal = rawHFinal * eraScale;
+    // 伸び方（形状）類似度
+    const shapeSim = calcTrajectoryShapeSimilarity(targetGraph, graph, pCur);
+
+    // 現在水準比と直近EMA速度比（カレンダー正規化後）
     const rNow = currentScore / hCur;
+    const hTargetT = gSt + pCur * gDur;
+    const hEma30m = computeEmaPace(graph, hTargetT, 30, 4, 0.52);
+    const hEma10m = computeEmaPace(graph, hTargetT, 10, 4, 0.58);
+    const hActiveEma = w10m > 0 ? hEma30m * (1 - w10m) + hEma10m * w10m : hEma30m;
+    const hCalFactor = Math.max(0.18, getCalFactor(hTargetT - 15 * 60 * 1000));
+    const hNormEma = hActiveEma / hCalFactor;
 
-    const hTargetT = graph.startTime + pCur * gDur;
-    const hRecentPrev = interpScoreAtTime(graph, Math.max(graph.startTime, hTargetT - zoneWinMs)) * eraScale;
-    const hRecentPace = ((hCur - hRecentPrev) / zoneWinMs) * 3600000;
-    const hActivity = getWindowAvgJstActivity(graph, hTargetT, zoneWinMs);
-    const hNormPace = hRecentPace / hActivity;
-    const rawRPace = hNormPace > 0 ? normalizedCurPace / hNormPace : rNow;
-    const rPace45m = Math.max(rNow * zoneCfg.clampLo, Math.min(rNow * zoneCfg.clampHi, rawRPace));
-
-    // 過去データの同時点10分速と照合
-    let rPace = rPace45m;
-    if (w10m > 0) {
-      const hWin10mMs = Math.min((hTargetT - graph.startTime) * 0.5, win10mMs * (gDur / Math.max(1, dur)));
-      const h10mPrev = interpScoreAtTime(graph, Math.max(graph.startTime, hTargetT - hWin10mMs)) * eraScale;
-      const hPace10m = hWin10mMs > 0 ? ((hCur - h10mPrev) / hWin10mMs) * 3600000 : hRecentPace;
-      const rawRPace10m = hPace10m > 0 ? pace10m / hPace10m : rPace45m;
-      const rPace10m = Math.max(rNow * 0.65, Math.min(rNow * 1.85, rawRPace10m));
-      rPace = (1 - w10m) * rPace45m + w10m * rPace10m;
-    }
-
-    const h1Prev = interpScoreAtTime(graph, Math.max(graph.startTime, hTargetT - display1hMs)) * eraScale;
-    const h1Pace = ((hCur - h1Prev) / display1hMs) * 3600000;
-
-    const h6Prev = interpScoreAtTime(graph, Math.max(graph.startTime, hTargetT - win6hMs)) * eraScale;
-    const hPace6h = ((hCur - h6Prev) / Math.max(1, win6hMs)) * 3600000;
+    const rawRPace = hNormEma > 0 ? normalizedEmaPace / hNormEma : rNow;
+    const clampRange = remH <= 3.0 ? 0.55 : 0.32;
+    const rPace = Math.max(rNow * (1 - clampRange), Math.min(rNow * (1 + clampRange), rawRPace));
 
     rNows.push(rNow);
     rPaces.push(rPace);
-    refCalcs.push({ item, graph, monthsAgo, eraScale, rawHCur, rawHFinal, hCur, hFinal, rNow, rPace, h1Pace, hPace6h });
-  }
 
-  const medRNow = calcMedian(rNows);
-  const medRPace = calcMedian(rPaces);
-  const liveHeat = wLevelWeight * medRNow + wPaceWeight * medRPace;
+    // 累積水準と直近EMA速度のブレンド比率（終盤ほどEMA速度を重視）
+    const wPace = remH <= 3.0 ? 0.72 : remH <= 6.0 ? 0.52 : pCur < 0.25 ? 0.42 : 0.32;
+    const baseScale = (1 - wPace) * rNow + wPace * rPace;
 
-  const alpha = Number(targetRank) <= 1000 ? 0.14 : Number(targetRank) >= 10000 ? 0.14 : 0.07;
-  const clampedHeat = Math.max(0.65, Math.min(2.30, liveHeat));
-  const remDamp = Math.pow(Math.max(0, 1.0 - pCur), 0.65);
-  const tierElasticity = Math.pow(clampedHeat, alpha * remDamp);
-
-  const gridSteps = 96;
-  const stepDtH = remH / gridSteps;
-  const isNightEnd = targetEndHour >= 1 && targetEndHour <= 6;
-  const floorBasePace = remH <= 2.0 ? Math.max(recentPace, effectiveDisplayPace) : recentPace;
-  const maxAllowedPace = calcHistoricalPaceLimit(
-    targetGraph,
-    eraAdjustedRefs,
-    currentScore,
-    elapsedMs,
-    remH,
-    floorBasePace
-  );
-  const refModels = [];
-
-  for (const rc of refCalcs) {
-    const { item, graph, monthsAgo, eraScale, rawHCur, rawHFinal, hCur, hFinal, rNow, rPace, h1Pace, hPace6h } = rc;
-    const refFatigue = getChapterFatigueFactor(item);
-    const relFatigue = targetFatigue / Math.max(0.5, refFatigue);
-    const baseMultiplier = wLevelWeight * rNow + wPaceWeight * rPace;
-    const envMultiplier = weekendEndFactor * resourceFactor * trendFactor * relFatigue * accelBoost;
-
-    const stepCurve = [currentScore];
-    let accScore = currentScore;
-    let prevH = hCur;
+    // 各未来スロットの増分を「参照イベントの純粋増分 × 今回の曜日・祝日係数」で再合成
+    const slotCurve = [currentScore];
+    let acc = currentScore;
 
     if (!isFinished) {
-      for (let s = 1; s <= gridSteps; s++) {
-        const pStep = pCur + ((1 - pCur) * s) / gridSteps;
-        const pMid = pCur + ((1 - pCur) * (s - 0.5)) / gridSteps;
-        const hStep = interpScoreAtProgress(graph, pStep) * eraScale;
-        const dh = Math.max(0, hStep - prevH);
-        prevH = hStep;
+      for (let i = 0; i < futureSlots.length; i++) {
+        const sl = futureSlots[i];
+        const gT0 = gSt + sl.p0 * gDur;
+        const gT1 = gSt + sl.p1 * gDur;
+        const gMid = (gT0 + gT1) * 0.5;
+        const rawDh = Math.max(0, interpScoreAtTime(graph, gT1) - interpScoreAtTime(graph, gT0));
 
-        const remHMid = ((1 - pMid) * dur) / 3600000;
-        const elapsedFromNowH = (s - 0.5) * stepDtH;
-        const stepElasticity = remHMid <= 4.5 ? tierElasticity : 1.0 + (tierElasticity - 1.0) * 0.45;
+        // 参照回側の当時のカレンダー係数を剥がし、今回のカレンダー係数を乗せる
+        const refCal = Math.max(0.20, getCalFactor(gMid));
+        const calAdjustedDh = rawDh * (sl.calFactor / refCal);
 
-        let rawInc = dh * baseMultiplier * envMultiplier * stepElasticity;
+        // 時間の経過とともに実測EMA倍率からベース水準へ緩やかに減衰
+        const elapsedFromNowH = (sl.t0 + sl.t1) * 0.5 - lastT;
+        const decay = Math.exp(-Math.max(0, elapsedFromNowH) / (18 * 3600 * 1000));
+        const slotScale = rNow * (1 - decay) + baseScale * decay;
 
-        if (remH <= 6.0 && floorBasePace > 0) {
-          let floorRatio = 1.0;
-          if (isNightEnd) {
-            floorRatio = 0.70;
-          } else if (remHMid > 3.0) {
-            floorRatio = 0.90;
-          } else if (remHMid > 1.5) {
-            floorRatio = 0.95;
-          } else {
-            floorRatio = 1.00;
-          }
-
-          if (elapsedFromNowH < 0.5) {
-            const blend = elapsedFromNowH / 0.5;
-            const connRatio = 0.96 * (1.0 - blend) + floorRatio * blend;
-            floorRatio = Math.max(floorRatio, connRatio);
-          }
-
-          const minInc = floorBasePace * floorRatio * stepDtH;
-          rawInc = Math.max(rawInc, minInc);
-        }
-
-        if (Number.isFinite(maxAllowedPace) && stepDtH > 0) {
-          rawInc = Math.min(rawInc, maxAllowedPace * stepDtH);
-        }
-
-        accScore += rawInc;
-        stepCurve.push(accScore);
+        acc += calAdjustedDh * slotScale;
+        slotCurve.push(acc);
       }
     }
 
-    const impliedFinal = isFinished ? currentScore : accScore;
-    const recencyWeight = Math.exp(-Math.abs(monthsAgo) / 6.0);
-    let simWeight = 1.0;
-    const refEndHour = getJstHour(graph.endTime);
-    const refStartDay = getJstDayOfWeek(graph.startTime);
-    if (Math.abs(item.durationH - targetItem.durationH) < 2) simWeight += 0.7;
-    if (refEndHour === targetEndHour) simWeight += 0.7;
-    if (refStartDay === targetStartDay) simWeight += 1.2;
-    if (item.eventId && item.eventId === targetItem.eventId) simWeight += 0.8;
-
-    const rawScaleSim = Math.min(rNow, 1 / Math.max(1e-4, rNow));
-    const scaleSim = Math.pow(rawScaleSim, 1.25);
-    const weight = simWeight * recencyWeight * (0.20 + 0.80 * scaleSim);
+    // 総合重み：伸び方（形状）類似度を最重視＋チャプター種別一致＋規模の近さ
+    const refChNum = getChapterNumber(item);
+    let chWeight = 1.0;
+    if (targetChNum != null && refChNum != null) {
+      if (targetChNum === refChNum) chWeight = 1.35;
+      else if ((targetChNum === 5) === (refChNum === 5)) chWeight = 1.15;
+    }
+    const scaleSim = Math.min(rNow, 1 / Math.max(1e-4, rNow));
+    const weight = Math.pow(shapeSim, 1.6) * chWeight * (0.35 + 0.65 * scaleSim);
 
     refModels.push({
       item,
       graph,
-      eraScale,
-      hCur: rawHCur,
-      hFinal: rawHFinal,
-      adjHCur: hCur,
-      adjHFinal: hFinal,
-      h1Pace,
-      hPace6h,
-      impliedFinal,
-      stepCurve,
+      hCur,
+      hFinal,
+      rNow,
+      rPace,
+      shapeSim,
+      impliedFinal: isFinished ? currentScore : acc,
+      slotCurve,
       weight,
     });
   }
 
   refModels.sort((a, b) => b.weight - a.weight);
 
+  const medRNow = calcMedian(rNows);
+  const medRPace = calcMedian(rPaces);
+  const liveHeat = 0.55 * medRNow + 0.45 * medRPace;
+
+  // 4. 実測加速検知に基づく「条件付き」終盤スパート補正
+  // （前半が緩やかでも、実際に終盤の加速が始まった時のみ段階的に引き上げる）
+  let spurtBoost = 1.0;
+  let surgeDetectedRatio = 1.0;
+  if (!isFinished && remH <= 12.0 && elapsedH >= 4.0) {
+    const prevCheckT = Math.max(st + 60 * 60 * 1000, lastT - 2.5 * 3600 * 1000);
+    const prevEma = computeEmaPace(targetGraph, prevCheckT, 30, 3, 0.52);
+    const prevCal = Math.max(0.18, getCalFactor(prevCheckT - 15 * 60 * 1000));
+    const normPrevEma = prevEma / prevCal;
+
+    if (normPrevEma > 0) {
+      surgeDetectedRatio = normalizedEmaPace / normPrevEma;
+      // カレンダー要因を除いた純粋な時速が2.5時間前より6%以上加速している場合のみ発動
+      if (surgeDetectedRatio > 1.06) {
+        const tierSensitivity = rankNum <= 1000 ? 0.34 : rankNum >= 10000 ? 0.22 : 0.14;
+        const maxCap = rankNum <= 1000 ? 1.32 : rankNum >= 10000 ? 1.20 : 1.12;
+        spurtBoost = Math.min(maxCap, 1.0 + (surgeDetectedRatio - 1.06) * tierSensitivity);
+      }
+    }
+  }
+
+  // 5. 全スロット積算 ＆ 過去データの加重標準偏差（σ）による動的レンジ算出
   const forecastSeries = [];
   let centralFinal = currentScore;
   let minFinal = currentScore;
   let maxFinal = currentScore;
 
-  if (!isFinished && refModels.length > 0) {
+  if (!isFinished && refModels.length > 0 && futureSlots.length > 0) {
     const totalW = refModels.reduce((acc, m) => acc + m.weight, 0);
-    const rawCentralFinal = refModels.reduce((acc, m) => acc + m.impliedFinal * m.weight, 0) / totalW;
-    centralFinal = rawCentralFinal;
 
-    const upperAnchors = refModels
-      .filter((m) => m.adjHCur >= currentScore * 0.98)
-      .sort((a, b) => a.adjHCur - b.adjHCur);
+    // 各スロットのベース増分を加重平均し、条件付きスパート補正を適用して積算
+    let runningCentral = currentScore;
+    const centralPoints = [{ p: pCur, val: currentScore }];
 
-    let anchorScale = 1.0;
-    if (upperAnchors.length > 0) {
-      const ua = upperAnchors[0];
-      const isSurgingPastRef = effectiveDisplayPace > ua.h1Pace * 1.03;
-      if (!isSurgingPastRef && pace6h <= ua.hPace6h * 1.02) {
-        const capMargin = liveHeat > 1.05 ? 1.18 : 1.15;
-        const capVal = ua.adjHFinal * capMargin;
-        if (centralFinal > capVal) {
-          const rawGain = rawCentralFinal - currentScore;
-          const cappedGain = Math.max(0, capVal - currentScore);
-          anchorScale = rawGain > 0 ? cappedGain / rawGain : 1.0;
-          centralFinal = capVal;
-        }
+    for (let i = 0; i < futureSlots.length; i++) {
+      const sl = futureSlots[i];
+      let slotBaseInc = 0;
+      for (const m of refModels) {
+        const mInc = m.slotCurve[i + 1] - m.slotCurve[i];
+        slotBaseInc += mInc * m.weight;
       }
+      slotBaseInc /= totalW;
+
+      // 条件付きスパート補正はラスト6時間以内に集中適用
+      const spurtWeight = sl.remHMid <= 6.0 ? Math.min(1.0, (6.0 - sl.remHMid) / 4.0 + 0.35) : 0.15;
+      const effSpurt = 1.0 + (spurtBoost - 1.0) * spurtWeight;
+
+      runningCentral += slotBaseInc * effSpurt;
+      centralPoints.push({ p: sl.p1, val: runningCentral });
     }
+
+    centralFinal = runningCentral;
+
+    // 類似チャプター群の「最終着地予測値」の加重標準偏差 σ を算出
+    const spurtScaleTotal =
+      refModels.reduce((acc, m) => acc + m.impliedFinal * m.weight, 0) / totalW > currentScore
+        ? (centralFinal - currentScore) /
+          Math.max(1, refModels.reduce((acc, m) => acc + m.impliedFinal * m.weight, 0) / totalW - currentScore)
+        : 1.0;
 
     const variance =
       refModels.reduce((acc, m) => {
-        const adjImp = currentScore + (m.impliedFinal - currentScore) * anchorScale;
-        return acc + m.weight * Math.pow(adjImp - centralFinal, 2);
+        const scaledImp = currentScore + (m.impliedFinal - currentScore) * spurtScaleTotal;
+        return acc + m.weight * Math.pow(scaledImp - centralFinal, 2);
       }, 0) / totalW;
+
     const stdDev = Math.sqrt(variance);
-    const spreadMargin = Math.max(stdDev * 1.05, (centralFinal - currentScore) * 0.065);
+    // 階級別の信頼係数（ドリーム級は終盤変動が大きいためやや広め、ダイヤ・プラチナはタイトに）
+    const sigmaMult = rankNum <= 1000 ? 1.25 : rankNum >= 10000 ? 1.15 : 1.05;
+    const minFloorRatio = Math.max(0.025, 0.065 * Math.pow(1 - pCur, 0.7));
+    const spreadMargin = Math.max(stdDev * sigmaMult, (centralFinal - currentScore) * minFloorRatio);
 
     minFinal = Math.max(currentScore, centralFinal - spreadMargin);
     maxFinal = centralFinal + spreadMargin;
 
-    for (let i = 0; i <= gridSteps; i++) {
-      const p = pCur + ((1 - pCur) * i) / gridSteps;
+    for (let i = 0; i < centralPoints.length; i++) {
+      const pt = centralPoints[i];
       if (i === 0) {
-        forecastSeries.push({ p, central: currentScore, min: currentScore, max: currentScore });
+        forecastSeries.push({ p: pt.p, central: currentScore, min: currentScore, max: currentScore });
         continue;
       }
-      let wSum = 0;
-      for (const m of refModels) wSum += m.stepCurve[i] * m.weight;
-      const rawCVal = wSum / totalW;
-      const cVal = currentScore + (rawCVal - currentScore) * anchorScale;
-      const stepRatio = (p - pCur) / Math.max(1e-4, 1 - pCur);
+      const stepRatio = (pt.p - pCur) / Math.max(1e-4, 1 - pCur);
       const curMargin = spreadMargin * Math.pow(stepRatio, 0.85);
       forecastSeries.push({
-        p,
-        central: cVal,
-        min: Math.max(currentScore, cVal - curMargin),
-        max: cVal + curMargin,
+        p: pt.p,
+        central: pt.val,
+        min: Math.max(currentScore, pt.val - curMargin),
+        max: pt.val + curMargin,
       });
     }
   } else if (!isFinished) {
-    const remHours = Math.max(0, (et - lastT) / 3600000);
-    const paceBased = currentScore + normalizedCurPace * remHours * 1.15;
-    centralFinal = Math.max(naiveLinear * 1.12, paceBased);
-    minFinal = centralFinal * 0.92;
-    maxFinal = centralFinal * 1.10;
+    const naiveLinear = pCur > 0.02 ? currentScore / pCur : currentScore;
+    centralFinal = Math.max(naiveLinear * 1.08, currentScore + normalizedEmaPace * remH);
+    minFinal = centralFinal * 0.93;
+    maxFinal = centralFinal * 1.09;
     forecastSeries.push({ p: pCur, central: currentScore, min: currentScore, max: currentScore });
     forecastSeries.push({ p: 1, central: centralFinal, min: minFinal, max: maxFinal });
   }
 
   const halfSpread = isFinished ? 0 : Math.max(centralFinal - minFinal, maxFinal - centralFinal);
+  const topMatch = refModels[0];
 
   return applyNaturalManualAdjustment(
     {
@@ -1106,13 +1084,25 @@ function computePredictionServer(targetItem, targetGraph, refPairs, targetRank, 
       totalH: dur / 3600000,
       pCur,
       isFinished,
-      recentPace: effectiveDisplayPace,
+      recentPace: activeEmaPace,
       centralFinal,
       minFinal,
       maxFinal,
       halfSpread,
       forecastSeries,
       refModels,
+      metaInfo: {
+        refCount: refModels.length,
+        zoneLabel: remH <= 3.0 ? "終盤10分速EMA域" : "通常30分速EMA域",
+        wPacePct: remH <= 3.0 ? 72 : remH <= 6.0 ? 52 : 35,
+        w10mPct: Math.round(w10m * 100),
+        pace10m: ema10m,
+        pace30m: ema30m,
+        liveHeat,
+        spurtBoost,
+        topShapeSim: topMatch ? topMatch.shapeSim : 0,
+        topMatchName: topMatch ? topMatch.item.shortLabel : "-",
+      },
     },
     manualAdjustPt
   );
