@@ -136,7 +136,7 @@ const memStore = {
   predictionCache: null,    // { imageBase64, filename, timeLabel, updatedAt }
   lastManualUpdateAt: 0,    // 手動更新の最終タイムスタンプ
   lastAutoFetchAt: 0,
-  lastExecutedSlot: "",     // 二重配信防止用スロットキー
+  lastExecutedSlot: "",     // 二重実行防止用スロットキー（10分スロット対応）
   activeEndCache: null,     // { endTime, checkedAt }
 };
 
@@ -565,7 +565,7 @@ async function runAutomatedPollAndBroadcast(triggerReason = "scheduled", preFetc
   }
 
   if (now > target.endTime + 59 * 1000) {
-    console.log("[AutoPoll] イベント/チャプター終了後のため配信をスキップしました。");
+    console.log("[AutoPoll] イベント/チャプター終了後のため更新・配信をスキップしました。");
     return { fetched: false, reason: "event_ended" };
   }
 
@@ -719,9 +719,10 @@ async function runAutomatedPollAndBroadcast(triggerReason = "scheduled", preFetc
   await persistMeta();
 
   console.log(
-    `[AutoPoll] 自動データ更新完了: ${target.shortLabel} (${timeLabel}) / 画像生成(${rendered ? "成功" : "スキップ"})`
+    `[AutoPoll] 自動データ更新完了 (${triggerReason}): ${target.shortLabel} (${timeLabel}) / 画像生成(${rendered ? "成功" : "スキップ"})`
   );
 
+  // ★ triggerReason === "scheduled" のときだけDiscordチャンネルへ一斉通知を送信
   if (triggerReason === "scheduled") {
     const subs = normalizeSubscriptions(memStore.subscriptions);
     if (subs.length === 0) {
@@ -776,15 +777,20 @@ function startScheduledPoller() {
       const mm = jst.getUTCMinutes();
       const ss = jst.getUTCSeconds();
 
-      const isHourlyTrigger = mm === 2 && ss >= 30;
-      const isHalfHourTrigger = mm === 32 && ss >= 30;
-      if (!isHourlyTrigger && !isHalfHourTrigger) return;
+      // ★ 10分毎（02分, 12分, 22分, 32分, 42分, 52分）の 30秒以降に発火
+      if (mm % 10 !== 2 || ss < 30) return;
 
       const slotKey = `${yyyy}-${mo}-${dd}-${String(hh).padStart(2, "0")}-${String(mm).padStart(2, "0")}`;
       if (memStore.lastExecutedSlot === slotKey) return;
 
+      const isHourlyNotifySlot = mm === 2;
+      const isHalfHourSlot = mm === 32;
+
+      let shouldNotify = isHourlyNotifySlot;
       let preFetchedTarget = null;
-      if (isHalfHourTrigger) {
+
+      // 32分スロットの場合、終了3時間前以内なら一斉通知も実行する
+      if (isHalfHourSlot) {
         let activeEnd =
           memStore.activeEndCache && now - memStore.activeEndCache.checkedAt < 20 * 60 * 1000
             ? memStore.activeEndCache.endTime
@@ -798,16 +804,19 @@ function startScheduledPoller() {
         const isFinal3Hours =
           activeEnd != null && activeEnd - now <= 3 * 3600 * 1000 && now <= activeEnd + 59 * 1000;
 
-        if (!isFinal3Hours) {
-          return;
+        if (isFinal3Hours) {
+          shouldNotify = true;
         }
       }
 
       memStore.lastExecutedSlot = slotKey;
       await persistMeta();
 
-      console.log(`[Scheduler] 定時トリガー発火 (${slotKey} / 終盤30分モード=${isHalfHourTrigger})`);
-      await runAutomatedPollAndBroadcast("scheduled", preFetchedTarget);
+      const triggerReason = shouldNotify ? "scheduled" : "auto_cache_10m";
+      console.log(
+        `[Scheduler] 10分定期トリガー発火 (${slotKey} / モード=${triggerReason})`
+      );
+      await runAutomatedPollAndBroadcast(triggerReason, preFetchedTarget);
     } catch (err) {
       console.error("[Scheduler] タイマーエラー:", err);
     }
