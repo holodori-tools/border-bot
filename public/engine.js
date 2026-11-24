@@ -1,8 +1,10 @@
 /**
  * engine.js
- * ホロドリ イベントボーダー着地予測 ＆ 高解像度レポート描画 共通エンジン（v6.1 スポットライト／通常イベント統合版）
+ * ホロドリ イベントボーダー着地予測 ＆ 高解像度レポート描画 共通エンジン（v6.4 加算リード型ハイブリッド統合版）
  *
  * - Node.js (index.js) と ブラウザ (admin.html) の双方で 100% 同一ロジックを動作させる UMD モジュール
+ * - スポットライトイベント（全順位）および通常イベント・ダイヤ級（5,000位帯）は従来v6.1ロジックを完全維持
+ * - 通常イベント・ドリーム級（<=1,000位）およびプラチナ級（>=10,000位）のみ加算リード型ハイブリッドを適用
  * - 解像度 (2160x820 / 1600x900) を一切落とさず、低スペックサーバー向けに
  *   「キャンバス再利用」および「静的背景レイヤーのオフスクリーンキャッシュ」を内蔵
  */
@@ -134,13 +136,31 @@
   }
 
   // =========================================================================
-  // 2. 着地予測モデル（v6.1 状況適応型・動的ベースライン版）
+  // 2. 着地予測モデル（v6.4 加算リード型ハイブリッド ＋ スポットライト完全保護）
   // =========================================================================
   function calcMedian(values) {
     if (!values || values.length === 0) return 1.0;
     const sorted = [...values].sort((a, b) => a - b);
     const mid = sorted.length >> 1;
     return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) * 0.5;
+  }
+
+  function calcWeightedMedian(itemsWithWeights) {
+    const valid = itemsWithWeights.filter((x) => x.weight > 0);
+    if (valid.length === 0) return 0;
+    valid.sort((a, b) => a.value - b.value);
+    const totalW = valid.reduce((s, x) => s + x.weight, 0);
+    let acc = 0;
+    for (let i = 0; i < valid.length; i++) {
+      acc += valid[i].weight;
+      if (acc >= totalW * 0.5) {
+        if (i > 0 && Math.abs(acc - valid[i].weight - totalW * 0.5) < 1e-9) {
+          return (valid[i - 1].value + valid[i].value) * 0.5;
+        }
+        return valid[i].value;
+      }
+    }
+    return valid[valid.length - 1].value;
   }
 
   function interpScoreAtTime(graph, targetT) {
@@ -564,6 +584,21 @@
     const targetCat = normalizeEventCategory(targetItem?.category);
     const targetChNum = getChapterNumber(targetItem);
     const rankNum = Number(targetRank);
+
+    // スポットライトイベント判定（スポットライトは全順位で現行v6.1ロジックを100%完全維持）
+    const isSpotlight = targetCat === "spotlight";
+    const isDiamond = rankNum > 1000 && rankNum < 10000;
+    const isDream = rankNum <= 1000;
+    const isPlatinum = rankNum >= 10000;
+    const isSprintEvent = totalH <= 84;
+    const useLegacyV61 = isDiamond || isSpotlight;
+
+    // 通常イベントのドリーム・プラチナ用：開始直後8%ダッシュ区間を除外した巡航増分
+    const hasCruise = !useLegacyV61 && pCur >= 0.16;
+    const dashCutP = hasCruise ? 0.08 : 0.0;
+    const cruiseS0 = hasCruise ? interpScoreAtProgress(targetGraph, dashCutP) || 0 : 0;
+    const tCruiseInc = Math.max(0, currentScore - cruiseS0);
+
     const refModels = [];
     const rNows = [];
     const rPaces = [];
@@ -589,17 +624,60 @@
       const hCalFactor = getEffectiveCalFactor(getCalFactor, hTargetT - 15 * 60 * 1000, remH);
       const hNormEma = hActiveEma / hCalFactor;
 
-      const rawRPace = hNormEma > 0 ? normalizedEmaPace / hNormEma : rNow;
-      const clampRange = remH <= fastZoneHours ? 0.55 : 0.32;
-      const rPace = Math.max(rNow * (1 - clampRange), Math.min(rNow * (1 + clampRange), rawRPace));
+      let rPace;
+      let baseScale;
+      let longTermScale;
+      let durWeight;
+      let scaleSim;
+
+      if (useLegacyV61) {
+        // === スポットライト（全順位）＆ 通常イベント・ダイヤ級：v6.1 現行ロジック完全維持 ===
+        const rawRPace = hNormEma > 0 ? normalizedEmaPace / hNormEma : rNow;
+        const clampRange = remH <= fastZoneHours ? 0.55 : 0.32;
+        rPace = Math.max(rNow * (1 - clampRange), Math.min(rNow * (1 + clampRange), rawRPace));
+
+        const wPace =
+          remH <= fastZoneHours ? 0.72 : remH <= spurtFocusHours ? 0.52 : pCur < 0.25 ? 0.42 : 0.32;
+        baseScale = (1 - wPace) * rNow + wPace * rPace;
+        longTermScale = rNow;
+
+        const durSim = Math.min(totalH, rDurH) / Math.max(1e-4, Math.max(totalH, rDurH));
+        durWeight = 0.25 + 0.75 * Math.pow(durSim, 0.9);
+        scaleSim = Math.min(rNow, 1 / Math.max(1e-4, rNow));
+      } else {
+        // === 通常イベント・ドリーム級（<=1,000位）＆ プラチナ級（>=10,000位）：加算リード型ハイブリッド ===
+        let rAnchor = 1.0;
+        if (hasCruise) {
+          const hCruiseS0 = interpScoreAtProgress(graph, dashCutP) || 0;
+          const hCruiseInc = Math.max(1.0, hCur - hCruiseS0);
+          const rCruiseRaw = tCruiseInc / hCruiseInc;
+          const rCruise = Math.max(0.55, Math.min(1.55, rCruiseRaw));
+          const wCruise = Math.min(0.75, ((pCur - 0.16) / 0.45) * 0.75);
+          rAnchor = (1 - wCruise) * 1.0 + wCruise * rCruise;
+        }
+
+        const betaLearn = isSprintEvent ? 0.45 : isDream ? 0.85 : 0.95;
+        const lambdaMult = Math.min(1.0, Math.pow(pCur, betaLearn));
+        longTermScale = (1 - lambdaMult) * rAnchor + lambdaMult * rNow;
+
+        const rawRPace = hNormEma > 0 ? normalizedEmaPace / hNormEma : longTermScale;
+        const clampRange = remH <= fastZoneHours ? 0.55 : 0.32;
+        rPace = Math.max(
+          longTermScale * (1 - clampRange),
+          Math.min(longTermScale * (1 + clampRange), rawRPace)
+        );
+
+        const wPace =
+          remH <= fastZoneHours ? 0.72 : remH <= spurtFocusHours ? 0.52 : pCur < 0.25 ? 0.35 : 0.30;
+        baseScale = (1 - wPace) * longTermScale + wPace * rPace;
+
+        const durSim = Math.min(totalH, rDurH) / Math.max(1e-4, Math.max(totalH, rDurH));
+        durWeight = 0.18 + 0.82 * Math.pow(durSim, 1.1);
+        scaleSim = Math.min(longTermScale, 1 / Math.max(1e-4, longTermScale));
+      }
 
       rNows.push(rNow);
       rPaces.push(rPace);
-
-      // 累積水準と直近EMA速度のブレンド比率（終盤ほどEMA速度を重視）
-      const wPace =
-        remH <= fastZoneHours ? 0.72 : remH <= spurtFocusHours ? 0.52 : pCur < 0.25 ? 0.42 : 0.32;
-      const baseScale = (1 - wPace) * rNow + wPace * rPace;
 
       // 各未来スロットの増分を「参照イベントの純粋増分 × 今回の曜日・祝日係数」で再合成
       const slotCurve = [currentScore];
@@ -617,10 +695,10 @@
           const refCal = getEffectiveCalFactor(getCalFactor, gMid, sl.remHMid);
           const calAdjustedDh = rawDh * (sl.calFactor / refCal);
 
-          // 時間の経過とともに実測EMA倍率からベース水準へ緩やかに減衰（期間長比例の可変時定数）
+          // 時間の経過とともに実測EMA倍率から長期ベース水準へ緩やかに減衰
           const elapsedFromNowMs = (sl.t0 + sl.t1) * 0.5 - lastT;
           const decay = Math.exp(-Math.max(0, elapsedFromNowMs) / decayTauMs);
-          const slotScale = rNow * (1 - decay) + baseScale * decay;
+          const slotScale = longTermScale * (1 - decay) + baseScale * decay;
 
           acc += calAdjustedDh * slotScale;
           slotCurve.push(acc);
@@ -634,9 +712,6 @@
         catWeight = targetCat === refCat ? 1.45 : 0.55;
       }
 
-      const durSim = Math.min(totalH, rDurH) / Math.max(1e-4, Math.max(totalH, rDurH));
-      const durWeight = 0.25 + 0.75 * Math.pow(durSim, 0.9);
-
       const refChNum = getChapterNumber(item);
       let chWeight = 1.0;
       if (targetCat === "spotlight" && refCat === "spotlight" && targetChNum != null && refChNum != null) {
@@ -644,7 +719,6 @@
         else if ((targetChNum === 5) === (refChNum === 5)) chWeight = 1.15;
       }
 
-      const scaleSim = Math.min(rNow, 1 / Math.max(1e-4, rNow));
       const weight =
         Math.pow(shapeSim, 1.6) * catWeight * durWeight * chWeight * (0.35 + 0.65 * scaleSim);
 
@@ -722,13 +796,38 @@
         centralPoints.push({ p: sl.p1, val: runningCentral });
       }
 
-      centralFinal = runningCentral;
+      const meanImplied = refModels.reduce((acc, m) => acc + m.impliedFinal * m.weight, 0) / totalW;
+
+      if (useLegacyV61) {
+        centralFinal = runningCentral;
+      } else {
+        // 通常イベント（ドリーム・プラチナ）：加重平均と加重中央値をブレンドし外れ値イベントの影響を抑制
+        const medBase = calcWeightedMedian(
+          refModels.map((m) => ({ value: m.impliedFinal, weight: m.weight }))
+        );
+        const spurtRatio =
+          meanImplied > currentScore
+            ? (runningCentral - currentScore) / Math.max(1, meanImplied - currentScore)
+            : 1.0;
+        const medCentral = currentScore + Math.max(0, medBase - currentScore) * spurtRatio;
+        const wMed = isDream ? 0.35 : 0.25;
+        centralFinal = runningCentral * (1 - wMed) + medCentral * wMed;
+
+        // グラフ系列（centralPoints）の終着点も centralFinal に滑らかに整合
+        const gainBeforeBlend = runningCentral - currentScore;
+        const gainAfterBlend = centralFinal - currentScore;
+        if (gainBeforeBlend > 1) {
+          const curveRatio = gainAfterBlend / gainBeforeBlend;
+          for (let i = 1; i < centralPoints.length; i++) {
+            centralPoints[i].val = currentScore + (centralPoints[i].val - currentScore) * curveRatio;
+          }
+        }
+      }
 
       // 類似イベント群の「最終着地予測値」の加重標準偏差 σ を算出
       const spurtScaleTotal =
-        refModels.reduce((acc, m) => acc + m.impliedFinal * m.weight, 0) / totalW > currentScore
-          ? (centralFinal - currentScore) /
-            Math.max(1, refModels.reduce((acc, m) => acc + m.impliedFinal * m.weight, 0) / totalW - currentScore)
+        meanImplied > currentScore
+          ? (centralFinal - currentScore) / Math.max(1, meanImplied - currentScore)
           : 1.0;
 
       const variance =
@@ -738,10 +837,23 @@
         }, 0) / totalW;
 
       const stdDev = Math.sqrt(variance);
-      // 階級別の信頼係数（ドリーム級は終盤変動が大きいためやや広め、ダイヤ・プラチナはタイトに）
-      const sigmaMult = rankNum <= 1000 ? 1.25 : rankNum >= 10000 ? 1.15 : 1.05;
-      const minFloorRatio = Math.max(0.025, 0.065 * Math.pow(1 - pCur, 0.7));
-      const spreadMargin = Math.max(stdDev * sigmaMult, (centralFinal - currentScore) * minFloorRatio);
+      let spreadMargin;
+      if (useLegacyV61) {
+        // スポットライト（全順位）＆ 通常イベント・ダイヤ級：v6.1 現行レンジ計算を完全維持
+        const sigmaMult = rankNum <= 1000 ? 1.25 : rankNum >= 10000 ? 1.15 : 1.05;
+        const minFloorRatio = Math.max(0.025, 0.065 * Math.pow(1 - pCur, 0.7));
+        spreadMargin = Math.max(stdDev * sigmaMult, (centralFinal - currentScore) * minFloorRatio);
+      } else if (isDream) {
+        const sigmaMult = 1.30;
+        const remFloor = (centralFinal - currentScore) * Math.max(0.035, 0.085 * Math.pow(1 - pCur, 0.7));
+        const totalFloor = centralFinal * Math.max(0.022, 0.20 * Math.pow(1 - pCur, 1.0));
+        spreadMargin = Math.max(stdDev * sigmaMult, remFloor, totalFloor);
+      } else {
+        const sigmaMult = 1.35;
+        const remFloor = (centralFinal - currentScore) * Math.max(0.04, 0.11 * Math.pow(1 - pCur, 0.65));
+        const totalFloor = centralFinal * Math.max(0.022, 0.13 * Math.pow(1 - pCur, 0.90));
+        spreadMargin = Math.max(stdDev * sigmaMult, remFloor, totalFloor);
+      }
 
       minFinal = Math.max(currentScore, centralFinal - spreadMargin);
       maxFinal = centralFinal + spreadMargin;
@@ -794,8 +906,9 @@
         metaInfo: {
           refCount: refModels.length,
           targetCategory: targetCat || "unknown",
+          modelMode: useLegacyV61 ? "v6.1_multiplicative" : "v6.4_additive_lead_hybrid",
           zoneLabel: remH <= fastZoneHours ? "終盤10分速EMA域" : "通常30分速EMA域",
-          wPacePct: remH <= fastZoneHours ? 72 : remH <= spurtFocusHours ? 52 : 35,
+          wPacePct: remH <= fastZoneHours ? 72 : remH <= spurtFocusHours ? 52 : useLegacyV61 ? 35 : 30,
           w10mPct: Math.round(w10m * 100),
           pace10m: ema10m,
           pace30m: ema30m,
@@ -1966,8 +2079,9 @@
     formatRoundedJstTime,
     formatManRounded,
     buildNowBorderPayloadFromGraphs,
-    // 予測モデル v6.1 ＆ 補正ロジック
+    // 予測モデル v6.4 ＆ 補正ロジック
     calcMedian,
+    calcWeightedMedian,
     interpScoreAtTime,
     interpScoreAtProgress,
     getJstParts,
