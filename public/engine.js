@@ -1,6 +1,6 @@
 /**
  * engine.js
- * ホロドリ イベントボーダー着地予測 ＆ 高解像度レポート描画 共通エンジン
+ * ホロドリ イベントボーダー着地予測 ＆ 高解像度レポート描画 共通エンジン（v6.1 スポットライト／通常イベント統合版）
  *
  * - Node.js (index.js) と ブラウザ (admin.html) の双方で 100% 同一ロジックを動作させる UMD モジュール
  * - 解像度 (2160x820 / 1600x900) を一切落とさず、低スペックサーバー向けに
@@ -25,6 +25,13 @@
     { rank: 5000, label: "ダイヤ級" },
     { rank: 10000, label: "プラチナ級" },
   ];
+
+  function normalizeEventCategory(cat) {
+    if (!cat) return null;
+    const c = String(cat).trim().toLowerCase();
+    if (c === "point") return "normal";
+    return c;
+  }
 
   function parseJstDateTime(str) {
     if (str == null) return null;
@@ -127,7 +134,7 @@
   }
 
   // =========================================================================
-  // 2. 着地予測モデル（v6 状況適応型・動的ベースライン版）
+  // 2. 着地予測モデル（v6.1 状況適応型・動的ベースライン版）
   // =========================================================================
   function calcMedian(values) {
     if (!values || values.length === 0) return 1.0;
@@ -325,6 +332,17 @@
     };
   }
 
+  /**
+   * 終了直前（ラスト6時間以内）のカレンダー係数緩和
+   * 最終日は曜日差よりも駆け込みスパートが支配的になるため、振れ幅をマイルドに減衰させる
+   */
+  function getEffectiveCalFactor(getCalFactor, ms, remHours) {
+    const raw = Math.max(0.18, getCalFactor(ms));
+    if (remHours >= 6.0) return raw;
+    const damp = 0.45 + 0.55 * (Math.max(0, remHours) / 6.0);
+    return 1.0 + (raw - 1.0) * damp;
+  }
+
   // EMA（指数移動平均）で30分速・10分速を取得
   function computeEmaPace(graph, lastT, slotMin, numSlots = 4, alpha = 0.52) {
     const st = graph.startTime;
@@ -466,6 +484,7 @@
     const st = targetGraph.startTime;
     const et = targetGraph.endTime;
     const dur = et - st;
+    const totalH = dur / 3600000;
     const pts = targetGraph.tier;
     const lastPt = pts[pts.length - 1];
     const lastT = lastPt[0];
@@ -476,6 +495,12 @@
     const remH = remMs / 3600000;
     const pCur = Math.min(1, elapsedMs / dur);
     const isFinished = pCur >= 0.998 && !targetItem.live;
+
+    // 開催期間（totalH）に応じた動的スケール定数（48h〜72hまでは従来スポットライト基準と同一）
+    const fastZoneHours = Math.max(3.0, Math.min(8.0, totalH * 0.04));
+    const surgeWindowHours = Math.max(12.0, Math.min(24.0, totalH * 0.12));
+    const spurtFocusHours = Math.max(6.0, Math.min(12.0, totalH * 0.06));
+    const decayTauMs = Math.max(18, totalH * 0.25) * 3600 * 1000;
 
     // 有効な過去完了データの抽出
     const validRefs = refPairs
@@ -494,28 +519,32 @@
         ? opts.getCalFactor
         : buildCalendarProfileFromRefs(validRefs.map((r) => r.graph));
 
-    // 1. 常に30分速EMA、終了3時間前から10分速EMAへ移行
+    // 1. 常に30分速EMA、終了終盤ゾーン（fastZoneHours）から10分速EMAへ移行
     const ema30m = computeEmaPace(targetGraph, lastT, 30, 4, 0.52);
     const ema10m = computeEmaPace(targetGraph, lastT, 10, 4, 0.58);
 
     let w10m = 0;
-    if (!isFinished && remH <= 3.0) {
-      // 残り3.0h -> 2.0h で 0% -> 65%、残り2.0h以下で 65% -> 90%
-      w10m = remH > 2.0 ? (3.0 - remH) * 0.65 : Math.min(0.90, 0.65 + (2.0 - remH) * 0.125);
+    if (!isFinished && remH <= fastZoneHours) {
+      const fastRatio = (fastZoneHours - remH) / fastZoneHours;
+      w10m =
+        fastRatio <= 0.34
+          ? (fastRatio / 0.34) * 0.65
+          : Math.min(0.90, 0.65 + ((fastRatio - 0.34) / 0.66) * 0.25);
     }
     const activeEmaPace = w10m > 0 ? ema30m * (1 - w10m) + ema10m * w10m : ema30m;
-    const curCalFactor = Math.max(0.18, getCalFactor(lastT - 15 * 60 * 1000));
+    const curCalFactor = getEffectiveCalFactor(getCalFactor, lastT - 15 * 60 * 1000, remH);
     const normalizedEmaPace = activeEmaPace / curCalFactor;
 
-    // 2. 残り時間スロット列の構築（ラスト3h前までは30分刻み、ラスト3h〜終了は10分刻み）
+    // 2. 残り時間スロット列の構築（終盤ゾーン前は30分刻み、終盤ゾーン〜終了は10分刻み）
     const futureSlots = [];
     if (!isFinished && remMs > 0) {
-      const final3hStart = et - 3 * 3600 * 1000;
+      const finalZoneStart = et - fastZoneHours * 3600 * 1000;
       let cursor = lastT;
       while (cursor < et - 1000) {
-        const slotMs = cursor >= final3hStart ? 10 * 60 * 1000 : 30 * 60 * 1000;
+        const slotMs = cursor >= finalZoneStart ? 10 * 60 * 1000 : 30 * 60 * 1000;
         const nextT = Math.min(et, cursor + slotMs);
         const midT = (cursor + nextT) * 0.5;
+        const remHMid = (et - midT) / 3600000;
         futureSlots.push({
           t0: cursor,
           t1: nextT,
@@ -523,15 +552,16 @@
           p1: (nextT - st) / dur,
           pMid: (midT - st) / dur,
           dtH: (nextT - cursor) / 3600000,
-          remHMid: (et - midT) / 3600000,
-          calFactor: getCalFactor(midT),
-          is10mZone: cursor >= final3hStart,
+          remHMid,
+          calFactor: getEffectiveCalFactor(getCalFactor, midT, remHMid),
+          is10mZone: cursor >= finalZoneStart,
         });
         cursor = nextT;
       }
     }
 
-    // 3. 伸び方（形状）類似度に基づく参照イベントの重み付けと個別予測カーブ生成
+    // 3. 伸び方（形状）類似度＋カテゴリ親和性＋期間長類似度に基づく参照イベント重み付け
+    const targetCat = normalizeEventCategory(targetItem?.category);
     const targetChNum = getChapterNumber(targetItem);
     const rankNum = Number(targetRank);
     const refModels = [];
@@ -542,6 +572,7 @@
       const { item, graph } = rObj;
       const gSt = graph.startTime;
       const gDur = graph.endTime - gSt;
+      const rDurH = gDur / 3600000;
       const hCur = interpScoreAtProgress(graph, pCur);
       const hFinal = graph.tier[graph.tier.length - 1][1];
       if (!hCur || hCur <= 0 || hFinal <= hCur) continue;
@@ -555,18 +586,19 @@
       const hEma30m = computeEmaPace(graph, hTargetT, 30, 4, 0.52);
       const hEma10m = computeEmaPace(graph, hTargetT, 10, 4, 0.58);
       const hActiveEma = w10m > 0 ? hEma30m * (1 - w10m) + hEma10m * w10m : hEma30m;
-      const hCalFactor = Math.max(0.18, getCalFactor(hTargetT - 15 * 60 * 1000));
+      const hCalFactor = getEffectiveCalFactor(getCalFactor, hTargetT - 15 * 60 * 1000, remH);
       const hNormEma = hActiveEma / hCalFactor;
 
       const rawRPace = hNormEma > 0 ? normalizedEmaPace / hNormEma : rNow;
-      const clampRange = remH <= 3.0 ? 0.55 : 0.32;
+      const clampRange = remH <= fastZoneHours ? 0.55 : 0.32;
       const rPace = Math.max(rNow * (1 - clampRange), Math.min(rNow * (1 + clampRange), rawRPace));
 
       rNows.push(rNow);
       rPaces.push(rPace);
 
       // 累積水準と直近EMA速度のブレンド比率（終盤ほどEMA速度を重視）
-      const wPace = remH <= 3.0 ? 0.72 : remH <= 6.0 ? 0.52 : pCur < 0.25 ? 0.42 : 0.32;
+      const wPace =
+        remH <= fastZoneHours ? 0.72 : remH <= spurtFocusHours ? 0.52 : pCur < 0.25 ? 0.42 : 0.32;
       const baseScale = (1 - wPace) * rNow + wPace * rPace;
 
       // 各未来スロットの増分を「参照イベントの純粋増分 × 今回の曜日・祝日係数」で再合成
@@ -582,12 +614,12 @@
           const rawDh = Math.max(0, interpScoreAtTime(graph, gT1) - interpScoreAtTime(graph, gT0));
 
           // 参照回側の当時のカレンダー係数を剥がし、今回のカレンダー係数を乗せる
-          const refCal = Math.max(0.20, getCalFactor(gMid));
+          const refCal = getEffectiveCalFactor(getCalFactor, gMid, sl.remHMid);
           const calAdjustedDh = rawDh * (sl.calFactor / refCal);
 
-          // 時間の経過とともに実測EMA倍率からベース水準へ緩やかに減衰
-          const elapsedFromNowH = (sl.t0 + sl.t1) * 0.5 - lastT;
-          const decay = Math.exp(-Math.max(0, elapsedFromNowH) / (18 * 3600 * 1000));
+          // 時間の経過とともに実測EMA倍率からベース水準へ緩やかに減衰（期間長比例の可変時定数）
+          const elapsedFromNowMs = (sl.t0 + sl.t1) * 0.5 - lastT;
+          const decay = Math.exp(-Math.max(0, elapsedFromNowMs) / decayTauMs);
           const slotScale = rNow * (1 - decay) + baseScale * decay;
 
           acc += calAdjustedDh * slotScale;
@@ -595,15 +627,26 @@
         }
       }
 
-      // 総合重み：伸び方（形状）類似度を最重視＋チャプター種別一致＋規模の近さ
+      // 総合重み：伸び方（形状）類似度 × カテゴリ親和性 × 期間長類似度 × チャプター種別一致 × 規模の近さ
+      const refCat = normalizeEventCategory(item?.category);
+      let catWeight = 1.0;
+      if (targetCat && refCat) {
+        catWeight = targetCat === refCat ? 1.45 : 0.55;
+      }
+
+      const durSim = Math.min(totalH, rDurH) / Math.max(1e-4, Math.max(totalH, rDurH));
+      const durWeight = 0.25 + 0.75 * Math.pow(durSim, 0.9);
+
       const refChNum = getChapterNumber(item);
       let chWeight = 1.0;
-      if (targetChNum != null && refChNum != null) {
+      if (targetCat === "spotlight" && refCat === "spotlight" && targetChNum != null && refChNum != null) {
         if (targetChNum === refChNum) chWeight = 1.35;
         else if ((targetChNum === 5) === (refChNum === 5)) chWeight = 1.15;
       }
+
       const scaleSim = Math.min(rNow, 1 / Math.max(1e-4, rNow));
-      const weight = Math.pow(shapeSim, 1.6) * chWeight * (0.35 + 0.65 * scaleSim);
+      const weight =
+        Math.pow(shapeSim, 1.6) * catWeight * durWeight * chWeight * (0.35 + 0.65 * scaleSim);
 
       refModels.push({
         item,
@@ -628,10 +671,10 @@
     // 4. 実測加速検知に基づく「条件付き」終盤スパート補正
     let spurtBoost = 1.0;
     let surgeDetectedRatio = 1.0;
-    if (!isFinished && remH <= 12.0 && elapsedH >= 4.0) {
+    if (!isFinished && remH <= surgeWindowHours && elapsedH >= 4.0) {
       const prevCheckT = Math.max(st + 60 * 60 * 1000, lastT - 2.5 * 3600 * 1000);
       const prevEma = computeEmaPace(targetGraph, prevCheckT, 30, 3, 0.52);
-      const prevCal = Math.max(0.18, getCalFactor(prevCheckT - 15 * 60 * 1000));
+      const prevCal = getEffectiveCalFactor(getCalFactor, prevCheckT - 15 * 60 * 1000, remH + 2.5);
       const normPrevEma = prevEma / prevCal;
 
       if (normPrevEma > 0) {
@@ -657,6 +700,7 @@
       // 各スロットのベース増分を加重平均し、条件付きスパート補正を適用して積算
       let runningCentral = currentScore;
       const centralPoints = [{ p: pCur, val: currentScore }];
+      const spurtFocusSpan = Math.max(4.0, spurtFocusHours * 0.67);
 
       for (let i = 0; i < futureSlots.length; i++) {
         const sl = futureSlots[i];
@@ -667,8 +711,11 @@
         }
         slotBaseInc /= totalW;
 
-        // 条件付きスパート補正はラスト6時間以内に集中適用
-        const spurtWeight = sl.remHMid <= 6.0 ? Math.min(1.0, (6.0 - sl.remHMid) / 4.0 + 0.35) : 0.15;
+        // 条件付きスパート補正は終盤スパート集中時間（spurtFocusHours）以内に集中適用
+        const spurtWeight =
+          sl.remHMid <= spurtFocusHours
+            ? Math.min(1.0, (spurtFocusHours - sl.remHMid) / spurtFocusSpan + 0.35)
+            : 0.15;
         const effSpurt = 1.0 + (spurtBoost - 1.0) * spurtWeight;
 
         runningCentral += slotBaseInc * effSpurt;
@@ -677,7 +724,7 @@
 
       centralFinal = runningCentral;
 
-      // 類似チャプター群の「最終着地予測値」の加重標準偏差 σ を算出
+      // 類似イベント群の「最終着地予測値」の加重標準偏差 σ を算出
       const spurtScaleTotal =
         refModels.reduce((acc, m) => acc + m.impliedFinal * m.weight, 0) / totalW > currentScore
           ? (centralFinal - currentScore) /
@@ -734,7 +781,7 @@
         currentScore,
         lastT,
         elapsedH,
-        totalH: dur / 3600000,
+        totalH,
         pCur,
         isFinished,
         recentPace: activeEmaPace,
@@ -746,8 +793,9 @@
         refModels,
         metaInfo: {
           refCount: refModels.length,
-          zoneLabel: remH <= 3.0 ? "終盤10分速EMA域" : "通常30分速EMA域",
-          wPacePct: remH <= 3.0 ? 72 : remH <= 6.0 ? 52 : 35,
+          targetCategory: targetCat || "unknown",
+          zoneLabel: remH <= fastZoneHours ? "終盤10分速EMA域" : "通常30分速EMA域",
+          wPacePct: remH <= fastZoneHours ? 72 : remH <= spurtFocusHours ? 52 : 35,
           w10mPct: Math.round(w10m * 100),
           pace10m: ema10m,
           pace30m: ema30m,
@@ -1313,7 +1361,7 @@
       }
 
       ctx.textAlign = "center";
-      const stepH = pred.totalH <= 48 ? 6 : 24;
+      const stepH = pred.totalH <= 48 ? 6 : pred.totalH <= 120 ? 24 : 48;
       for (let h = 0; h <= pred.totalH; h += stepH) {
         const gx = xOf(h / pred.totalH);
         ctx.strokeStyle = "rgba(255, 255, 255, 0.07)";
@@ -1637,7 +1685,7 @@
       }
 
       ctx.textAlign = "center";
-      const stepH = pred.totalH <= 48 ? 12 : 24;
+      const stepH = pred.totalH <= 48 ? 12 : pred.totalH <= 120 ? 24 : 48;
       for (let hr = 0; hr <= pred.totalH; hr += stepH) {
         const gx = xOf(hr / pred.totalH);
         ctx.strokeStyle = "rgba(255, 255, 255, 0.07)";
@@ -1911,13 +1959,14 @@
     DAYS_JP,
     TIER_DEFS,
     // 日時・テキストユーティリティ
+    normalizeEventCategory,
     parseJstDateTime,
     formatNumber,
     formatJST,
     formatRoundedJstTime,
     formatManRounded,
     buildNowBorderPayloadFromGraphs,
-    // 予測モデル v6 ＆ 補正ロジック
+    // 予測モデル v6.1 ＆ 補正ロジック
     calcMedian,
     interpScoreAtTime,
     interpScoreAtProgress,
@@ -1928,6 +1977,7 @@
     isJapaneseHolidayJST,
     getDefaultSlot30Factor,
     buildCalendarProfileFromRefs,
+    getEffectiveCalFactor,
     computeEmaPace,
     calcTrajectoryShapeSimilarity,
     getChapterNumber,
