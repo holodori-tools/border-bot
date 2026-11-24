@@ -4,6 +4,7 @@ const fs = require("fs");
 const multer = require("multer");
 const {
   Client,
+  Events,
   GatewayIntentBits,
   REST,
   Routes,
@@ -18,7 +19,11 @@ const {
 } = require("discord.js");
 
 // ★ 共通予測・描画エンジン（public/engine.js と単一ソース共有）
-const Engine = require("../public/engine.js");
+const PUBLIC_DIR = fs.existsSync(path.join(__dirname, "public/engine.js"))
+  ? path.join(__dirname, "public")
+  : path.join(__dirname, "../public");
+
+const Engine = require(path.join(PUBLIC_DIR, "engine.js"));
 
 let createCanvas = null;
 let registerCustomFont = null;
@@ -388,13 +393,13 @@ async function loadArchiveFromGithubServer() {
 
       if (repGraph) {
         const durH = (repGraph.endTime - repGraph.startTime) / 3600000;
-        const cat = ent.category || "spotlight";
+        const cat = Engine.normalizeEventCategory(ent.category) || "spotlight";
         items.push({
           key,
           eventId: ent.eventId || "archive",
           chapterId: ent.chapterId || displayName,
           category: cat,
-          catLabel: cat === "point" ? "ポイントイベント" : "スポットライト",
+          catLabel: cat === "normal" ? "ポイントイベント" : "スポットライト",
           eventName: displayName,
           chapterName: null,
           shortLabel: displayName,
@@ -462,6 +467,7 @@ async function fetchActiveEventFromNewApi(now = Date.now()) {
   }
   if (!activeEv) return null;
 
+  // 楽曲ハイスコア系イベントは対象外
   if (Number(activeEv.event_type) === 2) return null;
 
   const detailRes = await fetch(`${HOLODORI_API_BASE}/event/${encodeURIComponent(activeEv.event_id)}`);
@@ -491,13 +497,16 @@ async function fetchActiveEventFromNewApi(now = Date.now()) {
   memStore.activeEndCache = { endTime, checkedAt: now };
 
   const isRelay = Number(activeEv.event_type) === 3 || chapters.length > 1;
-  const category = isRelay ? "spotlight" : "point";
+  const category = isRelay ? "spotlight" : "normal";
   const catLabel = isRelay ? "スポットライト" : "ポイントイベント";
   const eventName = detail.event?.display_name || activeEv.display_name || activeEv.event_id;
-  const chapterName =
-    matchedChapter.display_name && String(matchedChapter.display_name).trim() !== ""
-      ? `Chapter ${matchedChapter.chapter_number || activeRanking.chapter_number || ""}：${matchedChapter.display_name}`
-      : null;
+  const chNum = matchedChapter.chapter_number || activeRanking.chapter_number || "";
+  const chTitle = matchedChapter.display_name ? String(matchedChapter.display_name).trim() : "";
+  const chapterName = chTitle
+    ? `Chapter ${chNum}：${chTitle}`
+    : isRelay && chNum
+    ? `Chapter ${chNum}`
+    : null;
 
   return {
     key: `${activeEv.event_id}::${activeRanking.chapter_id}`,
@@ -508,7 +517,7 @@ async function fetchActiveEventFromNewApi(now = Date.now()) {
     catLabel,
     eventName,
     chapterName,
-    shortLabel: chapterName ? `${eventName} / ${matchedChapter.display_name}` : eventName,
+    shortLabel: chTitle ? `${eventName} / ${chTitle}` : chapterName ? `${eventName} / ${chapterName}` : eventName,
     startTime,
     endTime,
     durationH: (endTime - startTime) / 3600000,
@@ -575,13 +584,27 @@ async function runAutomatedPollAndBroadcast(triggerReason = "scheduled", preFetc
   if (evIdx >= 0 && Array.isArray(target.detailRaw?.chapters)) {
     const chIds = [];
     const chMeta = { ...(memStore.events[evIdx].chapterMeta || {}) };
+    const detailRankings = Array.isArray(target.detailRaw?.rankings) ? target.detailRaw.rankings : [];
+
     for (const c of target.detailRaw.chapters) {
       chIds.push(c.chapter_id);
+      const rk = detailRankings.find(
+        (r) => r.chapter_id === c.chapter_id && r.ranking_type === "event_points"
+      );
+      const chNum = c.chapter_number || rk?.chapter_number || "";
+      const chTitle = c.display_name ? String(c.display_name).trim() : "";
+      const cStart = Engine.parseJstDateTime(c.start || rk?.chapter_start);
+      const cEnd = Engine.parseJstDateTime(c.end || rk?.chapter_end);
+
       chMeta[c.chapter_id] = {
-        name: c.display_name ? `Chapter ${c.chapter_number}：${c.display_name}` : null,
-        shortName: c.display_name || target.eventName,
-        startTime: Engine.parseJstDateTime(c.start),
-        endTime: Engine.parseJstDateTime(c.end),
+        name: chTitle
+          ? `Chapter ${chNum}：${chTitle}`
+          : target.detailRaw.chapters.length > 1 && chNum
+          ? `Chapter ${chNum}`
+          : null,
+        shortName: chTitle || (chNum && target.detailRaw.chapters.length > 1 ? `Chapter ${chNum}` : target.eventName),
+        startTime: cStart,
+        endTime: cEnd,
       };
     }
     memStore.events[evIdx].chapters = chIds;
@@ -648,17 +671,17 @@ async function runAutomatedPollAndBroadcast(triggerReason = "scheduled", preFetc
   const nowBorderText = nbCache ? nbCache.text : "";
   const timeLabel = nbCache ? nbCache.timeLabel : Engine.formatRoundedJstTime(now);
 
-  // ★ 共通 Engine.computePrediction を使って3ランク分の予測を算出
+  // ★ 共通 Engine.computePrediction を使って3ランク分の予測を算出（admin.html と同一母集団・同一ロジック）
   const predsByRank = {};
   for (const tierDef of TIER_DEFS) {
     const targetGraph = memStore.graphs[`${target.key}::${tierDef.rank}`];
     if (!targetGraph) continue;
 
-    const refPairs = [];
+    const refMap = new Map();
     for (const aItem of memStore.archiveItems) {
-      if (aItem.key === target.key || aItem.category !== target.category) continue;
+      if (aItem.key === target.key) continue;
       const g = memStore.archiveGraphs[`${aItem.key}::${tierDef.rank}`];
-      if (g) refPairs.push({ item: aItem, graph: g });
+      if (g) refMap.set(aItem.key, { item: aItem, graph: g });
     }
     for (const [gKey, gVal] of Object.entries(memStore.graphs)) {
       if (!gKey.endsWith(`::${tierDef.rank}`) || gKey.startsWith(`${target.key}::`)) continue;
@@ -666,19 +689,22 @@ async function runAutomatedPollAndBroadcast(triggerReason = "scheduled", preFetc
       const gProg = (gVal.tier[gVal.tier.length - 1][0] - gVal.startTime) / Math.max(1, gVal.endTime - gVal.startTime);
       if (gProg < 0.98) continue;
       const prefix = gKey.replace(/::\d+$/, "");
-      refPairs.push({
+      if (refMap.has(prefix)) continue;
+      const gDurH = (gVal.endTime - gVal.startTime) / 3600000;
+      refMap.set(prefix, {
         item: {
           key: prefix,
           eventId: gVal.eventId || prefix,
           chapterId: gVal.chapterId || prefix,
-          category: target.category,
-          durationH: (gVal.endTime - gVal.startTime) / 3600000,
+          category: gDurH >= 72 ? "normal" : "spotlight",
+          durationH: gDurH,
           live: false,
         },
         graph: gVal,
       });
     }
 
+    const refPairs = Array.from(refMap.values());
     const adjMap = memStore.manualAdjustments[target.key] || {};
     predsByRank[tierDef.rank] = Engine.computePrediction(
       target,
@@ -727,7 +753,7 @@ async function runAutomatedPollAndBroadcast(triggerReason = "scheduled", preFetc
     const subs = normalizeSubscriptions(memStore.subscriptions);
     if (subs.length === 0) {
       console.log("[AutoPoll] 購読チャンネル0件のため配信なし");
-      return { fetched: true, targetKey: target.key, timeLabel };
+      return { fetched: true, targetKey: target.key, shortLabel: target.shortLabel, timeLabel };
     }
 
     let okCount = 0;
@@ -867,7 +893,7 @@ async function registerSlashCommands() {
   }
 }
 
-client.once("clientReady", async () => {
+client.once(Events.ClientReady, async () => {
   console.log(`[Discord] ログイン完了: ${client.user.tag}`);
   console.log(`[Discord] 導入サーバー一覧 (計 ${client.guilds.cache.size} サーバー):`);
   client.guilds.cache.forEach((g) => {
@@ -881,11 +907,11 @@ client.once("clientReady", async () => {
   runAutomatedPollAndBroadcast("boot_sync").catch(() => {});
 });
 
-client.on("guildCreate", (guild) => {
+client.on(Events.GuildCreate, (guild) => {
   console.log(`[Discord] 新規サーバーに参加: ${guild.name} (ID: ${guild.id} / メンバー数: ${guild.memberCount}人)`);
 });
 
-client.on("interactionCreate", async (interaction) => {
+client.on(Events.InteractionCreate, async (interaction) => {
   // 1. ミュート時間帯セレクトメニュー操作
   if (
     interaction.isStringSelectMenu() &&
@@ -1079,7 +1105,7 @@ client.on("interactionCreate", async (interaction) => {
 // 7. Express Webサーバー ＆ 管理画面API
 // =========================================================================
 app.use(express.json({ limit: "10mb" }));
-app.use(express.static(path.join(__dirname, "../public")));
+app.use(express.static(PUBLIC_DIR));
 
 function requireAdmin(req, res, next) {
   const pw = req.headers["x-admin-password"];
@@ -1094,7 +1120,7 @@ app.get("/health", (_req, res) => {
 });
 
 app.get("/", (_req, res) => {
-  res.sendFile(path.join(__dirname, "../public/admin.html"));
+  res.sendFile(path.join(PUBLIC_DIR, "admin.html"));
 });
 
 app.post("/api/admin/login", (req, res) => {
@@ -1328,8 +1354,17 @@ app.post("/api/admin/broadcast", requireAdmin, upload.single("image"), async (re
 });
 
 // =========================================================================
-// 8. 起動シーケンス
+// 8. 起動シーケンス ＆ 安全停止処理
 // =========================================================================
+process.on("SIGINT", () => {
+  client.destroy();
+  process.exit(0);
+});
+process.on("SIGTERM", () => {
+  client.destroy();
+  process.exit(0);
+});
+
 (async () => {
   await ensureJapaneseFont();
   await loadStateFromRedis();
