@@ -418,7 +418,7 @@
       if (!ev || !ev.hasData) return null;
       const name = ev.name || "";
       if (ev.type === 2 || name.includes("スポットライト")) return "spotlight";
-      if ((ev.type === 1 && ev.isSongScore === false) || name.includes("ポイント")) return "point";
+      if ((ev.type === 1 && ev.isSongScore === false) || name.includes("ポイント")) return "normal";
       return null;
     }
 
@@ -620,8 +620,8 @@
             const durH = (repGraph.endTime - repGraph.startTime) / 3600000;
             const isFinished =
               repGraph.tier[repGraph.tier.length - 1][0] >= repGraph.endTime - 15 * 60 * 1000;
-            const cat = ent.category || "spotlight";
-            const catLabel = cat === "point" ? "ポイントイベント" : "スポットライト";
+            const cat = ent.category === "point" ? "normal" : (ent.category || "spotlight");
+            const catLabel = cat === "normal" ? "ポイントイベント" : "スポットライト";
 
             newArchiveItems.push({
               key,
@@ -779,22 +779,23 @@
         }
         if (!matched) {
           const tempKey = `imported::${parsed.startTime}_${parsed.endTime}`;
+          const durH = (parsed.endTime - parsed.startTime) / 3600000;
           matched = {
             key: tempKey,
             eventId: "imported",
             chapterId: `${parsed.startTime}`,
-            category: "spotlight",
+            category: durH >= 72 ? "normal" : "spotlight",
             catLabel: "取込イベント",
             label: `取込データ (${formatJST(parsed.startTime, true)}〜)`,
             shortLabel: `イベント(${formatJST(parsed.startTime, true)})`,
             startTime: parsed.startTime,
             endTime: parsed.endTime,
-            durationH: (parsed.endTime - parsed.startTime) / 3600000,
+            durationH: durH,
             live: parsed.tier[parsed.tier.length - 1][0] < parsed.endTime - 60000,
           };
           state.eligibleItems.unshift(matched);
         }
-
+        
         const cacheKey = `${matched.key}::${gRank}`;
         const graphObj = { ...parsed, rank: gRank };
         state.graphCache.set(cacheKey, graphObj);
@@ -925,7 +926,6 @@
       const refPairs = [];
       for (const cand of state.eligibleItems) {
         if (cand.key === targetItem.key || cand.live) continue;
-        if (cand.category !== targetItem.category) continue;
         const g = state.graphCache.get(`${cand.key}::${targetRank}`);
         if (g) refPairs.push({ item: cand, graph: g });
       }
